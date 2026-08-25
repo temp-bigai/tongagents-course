@@ -1,0 +1,21 @@
+# Lesson 2 依赖清单
+#
+# 这些依赖会通过 pip 自动从 BigAI Nexus 解析安装。
+# 安装方式：pip install -r requirements.txt
+#
+# 完整安装文档：见 INSTALL.md
+
+# === TongAgents 核心 SDK（最新 Cython 加密 wheel） ===
+# 从 BigAI Nexus 安装：tongagents==2.7.19 (cp312-cp312-linux_x86_64.whl)
+tongagents>=2.7.19
+
+# === TongAgents CLI（workflow 执行工具） ===
+# 从 BigAI Nexus 安装：tongagents-cli==1.8.19
+tongagents-cli>=1.8.19
+
+# === 测试依赖 ===
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+
+# === 可选：日志 / 类型提示 ===
+python-dotenv>=1.0.0
