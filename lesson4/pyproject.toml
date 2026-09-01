@@ -1,0 +1,24 @@
+[project]
+name = "tongagents-lesson4"
+version = "0.1.0"
+description = "Runnable notebook demos for tools, MCP, CLI, and agent skills"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ipykernel>=6.29,<8",
+    "jupyterlab>=4.3,<5",
+    "mcp>=1.12,<2",
+    "notebook>=7.3,<8",
+    "openai>=1.60,<3",
+    "python-dotenv>=1.0,<2",
+    "pyyaml>=6.0,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<10",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
