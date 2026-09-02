@@ -1,8 +1,8 @@
 # cli-sample
 
-最简 [TongAgents](https://github.com/temp-bigai/Tong-Agent) CLI 样例.
+最简 [TongAgents](https://github.com/temp-bigai/Tong-Agent) CLI 样例 (接真实 LLM).
 
-仿造 Tong-Agent 项目的 CLI, 但极简化: **单文件, REPL 循环, 3 个 OS 工具**.
+仿造 Tong-Agent 项目的 CLI, 但极简化: **单文件, REPL 循环, 3 个 OS 工具, OpenAI 兼容 LLM + function calling**.
 教学目的: 演示如何用 `tongagents.agent.Agent` 写一个最小可运行 CLI,
 不依赖复杂的 `tongagents-cli` (那是 TUI + session + skills 全套).
 
@@ -12,7 +12,8 @@
 
 - Python >= 3.11
 - [tongagents SDK 2.7.20](https://pypi.org/project/tongagents/2.7.20/) (从 [BigAI Nexus](https://nexus.mybigai.ac.cn/) 内网源装)
-- `python-dotenv` (读 `.env`)
+- `openai` (>=1.0) — 调 OpenAI 兼容 API
+- `python-dotenv` — 读 `.env`
 
 ---
 
@@ -24,75 +25,94 @@ git clone git@github.com:temp-bigai/tongagents-course.git
 cd tongagents-course/cli-sample
 
 # 2a. 用 pip (从内网 nexus 装 tongagents)
-pip install tongagents==2.7.20 python-dotenv
+pip install tongagents==2.7.20 openai python-dotenv
 #    (或先配 pip.conf: index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/)
 
 # 2b. 用 uv (推荐, 已配 pyproject.toml)
 uv sync
-
-# 3. 配 API key
-cp .env.example .env
-# 编辑 .env, 按 README 三选一填 OPENAI_API_KEY (本样例 echo 不调 LLM, 可选)
 ```
 
 > 🍎 **macOS 注意**: Nexus 上的 tongagents wheel 只有 Linux/Windows 版,
 > mac 上 `uv sync` 会报 `no matching distribution`. 解决:
-> `uv sync --no-group tongagents` 跳过 (本样例 echo 不需要 tongagents 实际调 LLM).
+> `uv sync --no-group tongagents` 跳过, 或改用 `pip install`.
 
 ---
 
-## 运行
+## 用真实 LLM 跑通 (推荐)
 
 ```bash
-$ python cli_sample.py
+# 1. 复制 Tong-Agent 的 .env (含 OPENAI_API_KEY + BASE_URL + MODEL)
+cp ~/work/codework/tong_agents/Tong-Agent/.env .env
 
+# (或) 自己填 OPENAI_* 三个变量
+export OPENAI_API_KEY=sk-xxx
+export OPENAI_BASE_URL=http://your-llm-endpoint/v1
+export OPENAI_MODEL=your-model-name
+
+# 2. 跑
+python cli_sample.py
+```
+
+> ⚠️ **关键陷阱**: cli-sample 用 `load_dotenv(..., override=True)`,
+> 因为 shell 里常设了 `OPENAI_API_KEY` / `OPENAI_BASE_URL` (例如指向
+> 公开 minimax API), dotenv 默认不覆盖, 会导致 .env 不生效.
+> override=True 让 `.env` 优先, Tong-Agent 内网 LLM 才能跑通.
+
+REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
+
+```
 ============================================================
-  cli-sample: TongAgents CLI 极简样例
+  cli-sample: TongAgents CLI 极简样例 (LLM 真实调用)
 ============================================================
-  输入问题, 按回车. 输入 'exit' / 'quit' / 'q' / Ctrl+D 退出.
-  内置工具 (路由关键词):
-    list [path]   列出目录 (默认当前目录)
-    read <path>   读文件 (前 200 行)
-    write <path> with content "..."   写文件
-  默认: echo 回显
+  内置工具 (LLM 自动选择):
+    list_dir(path=".")    列出目录
+    read_file(path, ...)  读文件 (前 200 行)
+    write_file(path, ...) 写文件
+  模型: doubao-seed-2-0-pro-260215    端点: http://10.1.53.240
 ============================================================
->>> list
-  README.md
-  pyproject.toml
-  cli_sample.py
-  .env.example
+>>> 列出当前目录有哪些文件
+  当前目录下有以下文件:
+  - .env.example
+  - README.md
+  - cli_sample.py
+  - pyproject.toml
 
->>> read README.md
-  # cli-sample
-  ...
+>>> 读 README.md
+  cli-sample 是一个最简 TongAgents CLI 样例, 用 REPL...
 
->>> write /tmp/hello.txt with content "hi from cli-sample"
-  written: /tmp/hello.txt (22 chars)
+>>> 写一个 hello.txt 内容是 hello world
+  written: hello.txt (11 chars)
 
->>> hello
-  [echo] hello
+>>> 你好
+  你好! 有什么可以帮你的吗?
 
 >>> exit
 bye!
 ```
 
-也可以管道:
+---
+
+## 不调 LLM 的极简模式
+
+如果你不想装 SDK / 不调 LLM, 只想看 REPL 骨架, 也可以用 stdin 模拟:
 
 ```bash
-printf "list\nexit\n" | python cli_sample.py
+printf '列出当前目录\n你好\nexit\n' | python cli_sample.py
+# 但 step() 会真的去调 LLM, 没 API key 会报错.
 ```
 
 ---
 
 ## 工具列表
 
-| 工具 | 作用 |
-|---|---|
-| `list_dir(path=".")` | 列出目录内容 (按名字排序) |
-| `read_file(path, max_lines=200)` | 读文件, 超 200 行截断并提示 |
-| `write_file(path, content)` | 写文件, 自动建父目录 |
+| 工具 | 作用 | OpenAI function schema |
+|---|---|---|
+| `list_dir(path=".")` | 列出目录内容 (按名字排序) | `path: string` |
+| `read_file(path, max_lines=200)` | 读文件, 超 200 行截断并提示 | `path: string`, `max_lines: int` |
+| `write_file(path, content)` | 写文件, 自动建父目录 | `path: string`, `content: string` |
 
-3 个工具以纯 Python 函数定义在 `cli_sample.py`, 也可作为 `TOOLS` dict 暴露给 LLM 做 OpenAI function calling.
+3 个工具以纯 Python 函数定义在 `cli_sample.py`, 注册到 `TOOL_SCHEMAS`
+(OpenAI function calling 格式) + `TOOL_IMPLS` (函数实现) 两个 map 里.
 
 ---
 
@@ -100,23 +120,23 @@ printf "list\nexit\n" | python cli_sample.py
 
 ```
 cli-sample/
-├── cli_sample.py       # 主程序 (REPL + Agent + 工具)
-├── pyproject.toml      # 依赖 tongagents==2.7.20 + python-dotenv
+├── cli_sample.py       # 主程序 (REPL + Agent + LLM + 工具)
+├── pyproject.toml      # 依赖 tongagents==2.7.20 + openai + python-dotenv
 ├── README.md           # 本文件
-└── .env.example        # API key 配置模板
+└── .env.example        # API key + BASE_URL + MODEL 配置模板
 ```
 
 ---
 
 ## 测试
 
-### 1. 静态语法测试 (不调 SDK)
+### 1. 静态语法测试 (不调 SDK / LLM)
 
 ```bash
 python -c "import ast; ast.parse(open('cli_sample.py').read()); print('cli_sample.py syntax OK')"
 ```
 
-### 2. 工具单测 (不调 Agent)
+### 2. 工具单测 (不调 LLM)
 
 ```bash
 python -c "
@@ -127,21 +147,24 @@ print('read_file:', read_file('/tmp/cli_sample_test.txt'))
 "
 ```
 
-### 3. Agent 单测
+### 3. Agent 单测 (需 .env)
 
 ```bash
+# 先 cp Tong-Agent .env
 python -c "
 from cli_sample import CliSampleAgent
 agent = CliSampleAgent()
-for r in agent.run(iter(['list', 'read README.md', 'hello'])):
-    print(repr(r))
+for q in ['列出当前目录', '读 README.md', '你好']:
+    print(f'>>> {q}')
+    print(f'  {agent.step(q)[:200]}')
 "
 ```
 
-### 4. REPL 端到端测试 (echo 输入)
+### 4. REPL 端到端测试 (需 .env)
 
 ```bash
-printf 'list\nexit\n' | python cli_sample.py
+cp ~/work/codework/tong_agents/Tong-Agent/.env .env
+printf '列出当前目录\n你好\nexit\n' | python cli_sample.py
 ```
 
 ---
@@ -150,9 +173,9 @@ printf 'list\nexit\n' | python cli_sample.py
 
 | 维度 | TongAgentCLI (官方) | cli-sample (本样例) |
 |---|---|---|
-| 代码量 | ~几千行 (TUI + skills + session) | ~150 行 (单文件) |
-| LLM 调用 | 自动 (tool calling + agent loop) | 否, 关键词路由 echo |
-| 工具来源 | `@tool` 装饰器 + ToolRegistry | 普通 Python 函数 + dict |
+| 代码量 | ~几千行 (TUI + skills + session) | ~250 行 (单文件) |
+| LLM 调用 | 自动 (tool calling + agent loop) | 调 `openai` SDK, 单轮最多 3 轮 tool call 循环 |
+| 工具来源 | `@tool` 装饰器 + ToolRegistry | 普通 Python 函数 + `TOOL_SCHEMAS` / `TOOL_IMPLS` |
 | 学习曲线 | 高 (TUI / session / skills 概念) | 低 (一个 `step()` 看懂) |
 
 适合想看 **最小可运行骨架** 的同学. 想看生产级 CLI 看 `tongagents-cli`.

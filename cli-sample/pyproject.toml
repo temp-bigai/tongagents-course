@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "tongagents==2.7.20",
+    "openai>=1.0.0",
     "python-dotenv>=1.0.0",
 ]
 
