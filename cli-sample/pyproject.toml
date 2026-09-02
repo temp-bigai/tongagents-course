@@ -1,0 +1,22 @@
+[project]
+name = "tongagents-cli-sample"
+version = "0.1.0"
+description = "Minimal CLI sample using TongAgents SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "tongagents==2.7.20",
+    "python-dotenv>=1.0.0",
+]
+
+# BigAI Nexus 私有源 (与 lesson4 一致)
+[[tool.uv.index]]
+name = "nexus"
+url = "https://nexus.mybigai.ac.cn/repository/pypi/simple/"
+
+[tool.uv.sources]
+tongagents = { index = "nexus" }
+
+[tool.setuptools]
+py-modules = ["cli_sample"]
