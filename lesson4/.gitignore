@@ -1,0 +1,14 @@
+.env
+.venv/
+.ipynb_checkpoints/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+
+# notebook 运行时生成（%writefile 自动重建）
+mcp_weather_server.py
+skills/
+
+# tongagents SessionManager 的默认 SQLite 存储（3.4/5.5/6.4 节首次运行自动创建）
+default_sql.db

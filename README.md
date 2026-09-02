@@ -23,6 +23,8 @@
 
 所有从 PPT 提取的 TongAgents SDK 代码按课程主题整理于各 lesson 目录。PPT 中明确出现的 SDK 代码集中在 Lesson 1、Lesson 2 和课程作业示例；其余 lesson 目录提供对应目录结构和 README，说明课程主题与后续扩展入口。
 
+Lesson 4 已提供可执行 Notebook，详见 [`lesson4/README.md`](lesson4/README.md)。
+
 ## 致谢
 
 基于 Tong-Agent SDK 2.4.0（https://github.com/temp-bigai/Tong-Agent）
