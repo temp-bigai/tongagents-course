@@ -14,11 +14,21 @@ dependencies = [
     "pyyaml>=6.0,<7",
 ]
 
+# TongAgents 双段对照（可选组）：内网 Linux 用 `uv sync --group tongagents` 安装。
+# 未安装时 notebook 的 2.5 / 3.4 / 5.5 / 6.3 / 6.4 节自动跳过，不影响其余内容。
 [dependency-groups]
-dev = [
-    "pytest>=8.0,<10",
-]
+tongagents = ["tongagents>=2.7.19"]
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
+# 默认组：裸 `uv sync` / `uv run` 即安装 tongagents（Linux/Windows）。
+# macOS 无 wheel，用 `uv sync --no-group tongagents` 跳过，notebook 自动降级。
+[tool.uv]
+default-groups = ["tongagents"]
+
+# BigAI Nexus 私有源（与 Lesson 1 INSTALL.md 的 pip.conf 等价）
+[[tool.uv.index]]
+name = "nexus"
+url = "https://nexus.mybigai.ac.cn/repository/pypi/simple/"
+
+[tool.uv.sources]
+tongagents = { index = "nexus" }
+
