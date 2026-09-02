@@ -28,17 +28,50 @@
 
 ## 安装
 
-```bash
-# 1. clone
-git clone git@github.com:temp-bigai/tongagents-course.git
-cd tongagents-course/cli-sample
+### 推荐方式 (uv)
 
-# 2a. 用 pip (从内网 nexus 装)
+[uv](https://docs.astral.sh/uv/) 是 TongAgents 生态推荐的 Python 包管理工具.
+
+```bash
+# 1. clone 仓库 + 切 cli-sample 分支
+git clone git@github.com:temp-bigai/tongagents-course.git
+cd tongagents-course/
+git checkout feat/cli-sample
+
+# 2. 复制 Tong-Agent 的 .env (含 OPENAI_* 三件套)
+# 必须用 Tong-Agent 内网 LLM, 详见下方 "环境变量" 章节
+cp ../Tong-Agent/.env .
+
+# 3. 装依赖 (仓库根, 可能有 lesson 公共依赖)
+uv sync
+
+# 4. 进 cli-sample 子目录, 装 cli-sample 自己的依赖
+cd cli-sample/
+uv sync
+#   ↑ 创建 .venv + 装 tongagents==2.7.20 + python-dotenv (无 tongagents-cli)
+
+# 5. 创建 3.12 venv (如果 tongagents wheel 要求 3.12, uv 默认可能用别的)
+uv venv --python 3.12
+source .venv/bin/activate
+
+# 6. (可选) 重新装 tongagents 到新 venv
+uv pip install tongagents
+
+# 7. 验证
+python --version  # 应该看到 3.12.x
+```
+
+### 备用方式 (pip + venv)
+
+如果不想用 uv:
+
+```bash
+git clone git@github.com:temp-bigai/tongagents-course.git
+cd tongagents-course/cli-sample/
+python -m venv .venv
+source .venv/bin/activate
 pip install tongagents==2.7.20 python-dotenv
 #    (或先配 pip.conf: index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/)
-
-# 2b. 用 uv (推荐, 已配 pyproject.toml)
-uv sync
 ```
 
 > 🍎 **macOS 注意**: Nexus 上的 tongagents wheel 只有 Linux/Windows 版,
@@ -47,24 +80,61 @@ uv sync
 
 ---
 
-## 用真实 LLM 跑通
+## 运行
 
 ```bash
-# 1. 复制 Tong-Agent 的 .env (含 OPENAI_API_KEY + BASE_URL + MODEL)
+# 确保 .env 在 cli-sample/ 目录 (从 Tong-Agent 复制过来)
+cd cli-sample/
+ls -la .env
+# 应该看到 .env (从 ../Tong-Agent/.env 复制)
+
+# uv 方式 (推荐)
+uv run cli_sample.py
+
+# 或者手动激活 venv 后跑
+source .venv/bin/activate
+python cli_sample.py
+```
+
+输出 banner 后, 输入查询按回车. LLM + 工具调用 SDK 自动化, 无需手动管 stream:
+
+```
+>>> 你好
+  你好! 我可以帮助你...
+
+>>> 列出当前目录
+  [SDK 调本地 BashTool → 显示当前目录文件]
+
+>>> 读取 README.md 的前 3 行
+  [SDK 调本地 ReadFileTool → 输出前 3 行]
+
+>>> 写一个 hello.txt 内容是 hello world
+  [SDK 调本地 WriteFileTool → 文件创建]
+
+>>> exit
+bye!
+```
+
+---
+
+## 环境变量
+
+cli-sample 用 `OPENAI_*` 三件套, 任意兼容端点都通. **推荐用 Tong-Agent 内网 LLM**:
+
+```bash
+# 方式 A: 直接复制 Tong-Agent 的 .env (含 OPENAI_* 全套)
 cp ~/work/codework/tong_agents/Tong-Agent/.env .env
 
-# (或) 自己填 OPENAI_* 三个变量
+# 方式 B: 自己填
 export OPENAI_API_KEY=sk-xxx
 export OPENAI_BASE_URL=http://your-llm-endpoint/v1
 export OPENAI_MODEL=your-model-name
-
-# 2. 跑
-python cli_sample.py
 ```
 
 > ⚠️ **关键陷阱**: cli-sample 用 `load_dotenv(..., override=True)`,
 > 因为 shell 里常设了 `OPENAI_API_KEY` / `OPENAI_BASE_URL` (例如指向
 > 公开 minimax API), dotenv 默认不覆盖, 会导致 .env 不生效.
+> override=True 让 `.env` 优先, Tong-Agent 内网 LLM 才能跑通.
 
 REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
 
@@ -79,7 +149,7 @@ REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
 ============================================================
 
 >>> 列出当前目录有哪些文件
-  当前目录下有以下文件:
+  [调本地 BashTool] 当前目录下有以下文件:
   - .env.example
   - README.md
   - cli_sample.py
@@ -87,13 +157,13 @@ REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
   - tools/
 
 >>> 读 README.md 的前 5 行
-  README.md 的前 5 行内容如下:
+  [调本地 ReadFileTool] README.md 的前 5 行内容如下:
   # cli-sample
   最简 TongAgents CLI 样例 (走 SDK, 本地工具集).
   ...
 
 >>> 写一个 hello.txt 内容是 hello world
-  已创建 hello.txt, 内容 "hello world".
+  [调本地 WriteFileTool] 已创建 hello.txt, 内容 "hello world".
 
 >>> 你好
   你好! 有什么可以帮你的吗?
