@@ -1,39 +1,65 @@
 #!/usr/bin/env python3
 """
-cli-sample: 最简 TongAgents CLI 样例 (接真实 LLM)
+cli-sample: 用 TongAgent SDK StatelessReactAgent 的最简 CLI
 
 仿造 Tong-Agent 的 CLI, 但极简化:
 - 单文件 REPL 循环 (Read-Eval-Print)
-- 调用基于 tongagents SDK 的 Agent
-- Agent.step() 接真实 LLM (OpenAI 兼容 API, function calling)
-- 内置 3 个 OS 工具 (list_dir / read_file / write_file)
+- 调用 TongAgent SDK 的 StatelessReactAgent (同步 step() 接口, 不调 .stream())
+- SDK 默认工具集 (11 个): bash / read_file / write_file / edit_file / glob / grep /
+  exa_search / skill / delegate_task / query_background_process / stop_task
+- 用户问"读 / 写 / 列"时 SDK 自动调对应工具
 - 输入 'exit' / 'quit' / Ctrl+D 退出
 
+**注意**: 极简 REPL 是我们自己写的; 真正的 LLM 调用 + 工具调度 + function calling
+全部交给 TongAgent SDK. 我们用 SDK 的**同步**接口 `StatelessReactAgent.step()` —
+直接传 user input, 拿到返回 list (通常 1 个 final TextAction, 不是 generator),
+不需要管流式. SDK 自己负责多轮 tool 调用.
+
 用法:
-    # 1. 复制 Tong-Agent .env (含 OPENAI_* 三件套)
+    # 1. 复制 Tong-Agent 的 .env (含 OPENAI_* 三件套)
     cp ~/work/codework/tong_agents/Tong-Agent/.env .env
 
-    # 2. 装 openai (>=1.0)
-    pip install openai
+    # 2. 装 SDK
+    pip install tongagents==2.7.20 tongagents-cli python-dotenv
+    #    (或 uv sync)
 
     # 3. 跑
     $ python cli_sample.py
 
 环境变量 (从 .env 读, override=True 覆盖 shell env):
-    OPENAI_API_KEY:   LLM key
-    OPENAI_BASE_URL:  OpenAI 兼容端点 (默认 https://api.openai.com/v1)
-    OPENAI_MODEL:     模型名 (默认 gpt-4)
+    OPENAI_API_KEY:   LLM key (SDK 内部用)
+    OPENAI_BASE_URL:  OpenAI 兼容端点
+    OPENAI_MODEL:     模型名
 """
 from __future__ import annotations
 
-import json
 import os
-import sys
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator
+from typing import Any, Iterator
 
 # ============================================================
-# .env 加载 (必须在 SDK / openai import 之前)
+# TongAgent SDK 的 mcp 子模块用 importlib.metadata.version("mcp") 探测版本,
+# 但本地 pip metadata 没装 mcp, 会抛 PackageNotFoundError, 连锁 import 失败.
+# 这里 monkey-patch 一下让它返回兜底版本, 绕过此 bug.
+# (Tong-Agent 自己 cli/.venv 里有完整 mcp metadata, 没有这个问题)
+# ============================================================
+import importlib.metadata  # noqa: E402
+
+_orig_version = importlib.metadata.version  # noqa: E402
+
+
+def _safe_version(name: str) -> str:  # noqa: E402
+    try:
+        return _orig_version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+importlib.metadata.version = _safe_version  # noqa: E402
+
+
+# ============================================================
+# .env 加载 (必须在 SDK import 之前)
 # ============================================================
 # override=True 是关键: shell 里常设了 OPENAI_API_KEY / OPENAI_BASE_URL
 # (例如指向 minimax 公开 API), dotenv 默认不覆盖, 会导致 .env 不生效.
@@ -44,253 +70,120 @@ _env_path = Path(__file__).parent / ".env"
 if _env_path.exists():
     load_dotenv(_env_path, override=True)
 
-# SDK import
+
+# ============================================================
+# TongAgent SDK imports
+# ============================================================
+# Agent base class (只起文档作用, 我们不用它的抽象方法).
 from tongagents.agent import Agent, AgentSettings  # noqa: E402
 
-# openai SDK (>=1.0)
-import openai  # noqa: E402
+# StatelessReactAgent: SDK 真正的同步单步 Agent. step(input_event) → list[Action]
+# 内部: LLM 调用 + function calling + 工具调度 + 多轮 tool 循环 全自动.
+from tongagents.agents.llm_agent import StatelessReactAgent, ReactAgentSetting  # noqa: E402
+from tongagents.agents.llm import ModelConfig, ModelProvider  # noqa: E402
+from tongagents.agents.llm_agent.defs import LLMInputEvent  # noqa: E402
+from tongagents.agents.llm.messages import UserPromptMessage  # noqa: E402
+
+# SDK 默认工具注册 (11 个工具)
+from tongagents_cli.default_agent.tools import register_default_tools  # noqa: E402
+from tongagents.tools.tool_manager import ToolManager  # noqa: E402
 
 
 # ============================================================
-# AgentSettings: 配置 Agent 行为
+# 注册 SDK 默认工具 + 构造 StatelessReactAgent
+# ============================================================
+# 必须在构造 Agent 之前调用, 把 11 个工具注册到 SDK 内部 ToolManager.
+register_default_tools()
+
+# SDK 读 env 自己填 (OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 都在 env 里).
+_llm_config = ModelConfig(model_provider=ModelProvider.OPENAI_COMPATIBLE)
+
+# 极简 system prompt — SDK 默认 prompt 太啰嗦, cli-sample 要直接答问题 + 调工具.
+_SYSTEM_PROMPT = (
+    "你是 cli-sample agent, 帮用户操作本地文件 (读 / 写 / 列 / 搜). "
+    "普通问题直接答, 文件操作必须调工具. 用中文回答."
+)
+
+_AGENT_SETTINGS = ReactAgentSetting(
+    name="cli-sample-agent",
+    llm_config=_llm_config,
+    tool_identifier_list=list(ToolManager.tool_classes.keys()),
+    system_prompt=_SYSTEM_PROMPT,
+)
+
+
+# ============================================================
+# AgentSettings: 保留, 只起文档作用.
 # ============================================================
 SETTINGS = AgentSettings(
     name="cli-sample-agent",
-    description="最简 CLI 样例 Agent, 可以读 / 写 / 列文件, 回答用户问题",
-    capabilities=["file-ops", "chat"],
+    description="最简 CLI 样例 Agent, 用 SDK StatelessReactAgent + 默认 11 工具",
+    capabilities=["chat", "file-ops"],
     model=os.getenv("OPENAI_MODEL", "gpt-4"),
     temperature=0.7,
-    max_iterations=5,
+    max_iterations=10,
     verbose=False,
     topic="cli-sample",
 )
 
 
 # ============================================================
-# 工具: OS 文件操作 (用户问"看 / 写" 时用)
-# ============================================================
-def list_dir(path: str = ".") -> str:
-    """列出目录内容. 返回 '\\n' 分隔的文件名列表."""
-    try:
-        entries = sorted(os.listdir(path))
-        return "\n".join(entries)
-    except Exception as e:  # noqa: BLE001
-        return f"error: {type(e).__name__}: {e}"
-
-
-def read_file(path: str, max_lines: int = 200) -> str:
-    """读文件内容, 返回字符串. 最多 max_lines 行, 超出截断并提示."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except FileNotFoundError:
-        return f"error: file not found: {path}"
-    except Exception as e:  # noqa: BLE001
-        return f"error: {type(e).__name__}: {e}"
-
-    lines = content.splitlines()
-    if len(lines) > max_lines:
-        truncated = "\n".join(lines[:max_lines])
-        return f"{truncated}\n... (truncated, total {len(lines)} lines)"
-    return content
-
-
-def write_file(path: str, content: str) -> str:
-    """写文件. 返回 'written: <path> (<n> chars)'."""
-    try:
-        parent = Path(path).parent
-        if str(parent) and not parent.exists():
-            parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-    except Exception as e:  # noqa: BLE001
-        return f"error: {type(e).__name__}: {e}"
-    return f"written: {path} ({len(content)} chars)"
-
-
-# 工具实现 map (function name -> callable)
-TOOL_IMPLS: dict[str, Any] = {
-    "list_dir": list_dir,
-    "read_file": read_file,
-    "write_file": write_file,
-}
-
-# 工具定义 (OpenAI function calling 格式)
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "list_dir",
-            "description": "列出目录的文件名. 路径不存在或无权限时返回错误.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "要列出的目录路径, 默认 '.' (当前目录)",
-                        "default": ".",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "读文件全部内容. 大文件自动截断到 max_lines 行.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "要读的文件路径",
-                    },
-                    "max_lines": {
-                        "type": "integer",
-                        "description": "最多返回多少行, 默认 200",
-                        "default": 200,
-                    },
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "把 content 写到 path. 自动建父目录.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "目标文件路径",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "要写入的完整内容",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-]
-
-
-# ============================================================
-# LLM 调用 (OpenAI 兼容 API + function calling)
-# ============================================================
-SYSTEM_PROMPT = (
-    "你是 cli-sample agent, 帮用户在命令行里操作本地文件. "
-    "可用工具: list_dir (列目录) / read_file (读文件) / write_file (写文件). "
-    "普通问题直接答, 文件操作必须调工具. 用中文回答."
-)
-
-
-def _make_client() -> openai.OpenAI:
-    """从 env 构造 OpenAI 客户端 (兼容任意 OPENAI_BASE_URL)."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")  # 可选, 不传走默认
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY 未设置. 请 cp ~/work/codework/tong_agents/Tong-Agent/.env .env "
-            "或在环境变量 / .env 里填 OPENAI_API_KEY."
-        )
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return openai.OpenAI(**kwargs)
-
-
-def _call_llm(user_message: str, max_tool_rounds: int = 3) -> str:
-    """单轮 chat, 最多 max_tool_rounds 轮 tool 调用循环.
-
-    简化: 每轮最多 1 个 tool call (实际 SDK 可并发), 教学清晰.
-    """
-    client = _make_client()
-    model = os.environ.get("OPENAI_MODEL", "gpt-4")
-
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
-
-    for _round in range(max_tool_rounds + 1):
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-        )
-        msg = response.choices[0].message
-
-        # 没 tool call → 直接返回 content
-        if not msg.tool_calls:
-            return msg.content or ""
-
-        # 处理 tool calls (一轮可能有多个, 这里按顺序串行)
-        messages.append(msg)  # type: ignore[arg-type]
-        for tool_call in msg.tool_calls:
-            fn_name = tool_call.function.name
-            try:
-                fn_args = json.loads(tool_call.function.arguments or "{}")
-            except json.JSONDecodeError:
-                fn_args = {}
-            impl = TOOL_IMPLS.get(fn_name)
-            if impl is None:
-                result = f"error: unknown tool '{fn_name}'"
-            else:
-                try:
-                    result = impl(**fn_args)
-                except Exception as e:  # noqa: BLE001
-                    result = f"error: {type(e).__name__}: {e}"
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": str(result),
-                }
-            )
-
-    # 超过 max_tool_rounds
-    return "(max tool iterations reached, 没有最终回答)"
-
-
-# ============================================================
-# Agent 子类
+# Agent 子类: 薄壳包 StatelessReactAgent.step()
 # ============================================================
 class CliSampleAgent(Agent):
-    """最简 CLI Agent, 继承 tongagents.agent.Agent, step() 调真实 LLM."""
+    """最简 CLI Agent, 内部用 SDK 的 StatelessReactAgent 跑 LLM.
+
+    step() 包装 SDK 的 StatelessReactAgent.step() — SDK 自己负责:
+      - LLM 调用 (OpenAI 兼容 API, 从 env 读 OPENAI_*)
+      - function calling 解析
+      - 工具分发 + 结果回填
+      - 多轮 tool 循环
+
+    我们只做:
+      - REPL 输入解析
+      - LLMInputEvent 包装
+      - 返回 list 里取最终回复 TextAction.content
+    """
 
     agent_setting = SETTINGS
 
     def __init__(self):
         super().__init__(agent_setting=SETTINGS)
+        # StatelessReactAgent 不持久化 memory — 每次 step 都是 stateless 单轮对话.
+        # (教学极简版, 不做 session 持久化)
+        self._agent = StatelessReactAgent(agent_settings=_AGENT_SETTINGS)
 
     def step(self, event: Any) -> str:
-        """处理单条事件, 调真实 LLM (含 function calling 循环)."""
-        return _call_llm(str(event))
+        """处理单条 query, 调 SDK agent.step() 同步单步 → 返回最终文本.
+
+        StatelessReactAgent.step(LLMInputEvent(input=[UserPromptMessage(q)]))
+        返回 list[Action], 通常是 1 个 is_final_response=True 的 TextAction.
+        """
+        wrap = LLMInputEvent(input=[UserPromptMessage(str(event))])
+        actions = self._agent.step(wrap)
+        # 找 is_final_response=True 的 TextAction, 它的 content 是最终回复
+        for action in actions:
+            if getattr(action, "is_final_response", False):
+                return (action.content or "").strip()
+        # fallback: 第一个有 content 的 TextAction
+        for action in actions:
+            if hasattr(action, "content") and action.content:
+                return action.content.strip()
+        return ""
 
     def run(self, events: Iterator[Any]) -> Iterator[str]:
-        """流式处理事件, 每条产生一个回复."""
+        """流式处理多个事件, 每条产生一个回复."""
         for event in events:
             yield self.step(event)
 
     async def astep(self, event: Any) -> str:
-        """异步单步处理."""
+        """异步单步处理 (用 sync agent.step, 不真异步)."""
         return self.step(event)
 
-    async def arun(self, events: AsyncIterator[Any] | Any) -> AsyncIterator[str]:
+    async def arun(self, events: Any) -> Any:
         """异步流式处理."""
-        if hasattr(events, "__aiter__"):
-            async for event in events:
-                yield await self.astep(event)
-        else:
-            for event in events:
-                yield await self.astep(event)
+        for event in events:
+            yield await self.astep(event)
 
 
 # ============================================================
@@ -298,23 +191,22 @@ class CliSampleAgent(Agent):
 # ============================================================
 BANNER = """
 ============================================================
-  cli-sample: TongAgents CLI 极简样例 (LLM 真实调用)
+  cli-sample: TongAgents CLI 极简样例 (走 SDK)
 ============================================================
-  输入问题, 按回车. 输入 'exit' / 'quit' / 'q' / Ctrl+D 退出.
-  内置工具 (LLM 自动选择):
-    list_dir(path=".")    列出目录
-    read_file(path, ...)  读文件 (前 200 行)
-    write_file(path, ...) 写文件
-  模型: {model}    端点: {base_url}
+  Agent: StatelessReactAgent (SDK default)
+  工具: {tool_count} 个 (bash / write / read / edit / glob / grep / ...)
+  模型: {model}
+  端点: {base_url}
 ============================================================
 """.strip()
 
 
 def main() -> None:
     """REPL 主循环."""
-    model = os.environ.get("OPENAI_MODEL", "gpt-4")
+    model = os.environ.get("OPENAI_MODEL", "(unset)")
     base_url = os.environ.get("OPENAI_BASE_URL", "(default)")
-    print(BANNER.format(model=model, base_url=base_url))
+    tool_count = len(ToolManager.tool_classes)
+    print(BANNER.format(tool_count=tool_count, model=model, base_url=base_url))
 
     agent = CliSampleAgent()
 
@@ -332,7 +224,7 @@ def main() -> None:
             if query.lower() in ("exit", "quit", "q"):
                 break
 
-            # 调 Agent (单条 query → 一次 step → 真实 LLM + 工具循环)
+            # 调 Agent: SDK agent.step() 同步单步, LLM + 工具调度全自动
             try:
                 response = agent.step(query)
                 print(f"  {response}")

@@ -1,13 +1,13 @@
 [project]
 name = "tongagents-cli-sample"
 version = "0.1.0"
-description = "Minimal CLI sample using TongAgents SDK"
+description = "Minimal CLI sample using TongAgents SDK (default agent + 11 tools)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "tongagents==2.7.20",
-    "openai>=1.0.0",
+    "tongagents-cli>=2.7.20",
     "python-dotenv>=1.0.0",
 ]
 
@@ -18,6 +18,7 @@ url = "https://nexus.mybigai.ac.cn/repository/pypi/simple/"
 
 [tool.uv.sources]
 tongagents = { index = "nexus" }
+tongagents-cli = { index = "nexus" }
 
 [tool.setuptools]
 py-modules = ["cli_sample"]
