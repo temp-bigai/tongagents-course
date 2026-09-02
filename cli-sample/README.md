@@ -1,10 +1,18 @@
 # cli-sample
 
-最简 [TongAgents](https://github.com/temp-bigai/Tong-Agent) CLI 样例 (走 SDK).
+最简 [TongAgents](https://github.com/temp-bigai/Tong-Agent) CLI 样例 (走 SDK, 本地工具集).
 
-仿造 Tong-Agent 项目的 CLI, 但极简化: **单文件, REPL 循环, 用 SDK 的
-`StatelessReactAgent` + 11 个默认工具**, **同步 `step()` 调用**, **不调 `.stream()`**.
+仿造 Tong-Agent 项目的 CLI, 但极简化: **单文件 REPL + SDK `StatelessReactAgent` +
+6 个本地 OS 工具** (read / write / edit / bash / glob / grep), **同步 `step()` 调用**,
+**不调 `.stream()`**, **不依赖 `tongagents-cli`**.
 教学目的: 演示怎么用 tongagents SDK 写一个最小可运行 CLI.
+
+> ⚠️ **依赖变化** (相对 commit 1d5bf25):
+>  - 移除 `tongagents-cli>=2.7.20` 依赖
+>  - tongagents SDK 已经去掉对 tongagents-cli 的依赖, cli-sample 也跟着简化
+>  - SDK 默认 11 个工具的实现直接复制到本地 `cli-sample/tools/` 子包
+>  - **保留** 6 个核心 OS 工具 (read_file / write_file / edit_file / bash / glob / grep)
+>  - **省略** ExaSearchTool / SkillTool / DelegateTaskTool / QueryBackgroundProcessTool / StopTaskTool (依赖 CLI / 后台进程管理)
 
 ---
 
@@ -12,8 +20,9 @@
 
 - Python >= 3.11
 - [tongagents SDK 2.7.20](https://pypi.org/project/tongagents/2.7.20/) (从 [BigAI Nexus](https://nexus.mybigai.ac.cn/) 内网源装)
-- [tongagents-cli 2.7.20](https://pypi.org/project/tongagents-cli/) (default_agent 工具定义 + `register_default_tools`)
 - `python-dotenv` — 读 `.env`
+
+> ❌ **不依赖 `tongagents-cli`** — SDK 已经 standalone, cli-sample 也跟着简化
 
 ---
 
@@ -25,7 +34,7 @@ git clone git@github.com:temp-bigai/tongagents-course.git
 cd tongagents-course/cli-sample
 
 # 2a. 用 pip (从内网 nexus 装)
-pip install tongagents==2.7.20 tongagents-cli python-dotenv
+pip install tongagents==2.7.20 python-dotenv
 #    (或先配 pip.conf: index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/)
 
 # 2b. 用 uv (推荐, 已配 pyproject.toml)
@@ -60,15 +69,11 @@ python cli_sample.py
 REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
 
 ```
-[boot] loading 11 default tools ...
-[boot] building StatelessReactAgent ...
-[boot] agent ready, llm=OpenAIModel, tools_loaded=[bash, read_file, write_file, edit_file, glob, grep, ...]
-
 ============================================================
-  cli-sample: TongAgents CLI 极简样例 (走 SDK)
+  cli-sample: TongAgents CLI 极简样例 (走 SDK, 本地工具集)
 ============================================================
   Agent: StatelessReactAgent (SDK default)
-  工具: bash, edit_file, glob, grep, read_file, write_file, ...
+  工具: 6 个本地工具 (read / write / edit / bash / glob / grep)
   模型: doubao-seed-2-0-pro-260215
   端点: http://10.1.53.240
 ============================================================
@@ -79,11 +84,12 @@ REPL 示例 (Tong-Agent 内网 doubao-seed-2-0-pro):
   - README.md
   - cli_sample.py
   - pyproject.toml
+  - tools/
 
 >>> 读 README.md 的前 5 行
   README.md 的前 5 行内容如下:
   # cli-sample
-  最简 TongAgents CLI 样例 (走 SDK).
+  最简 TongAgents CLI 样例 (走 SDK, 本地工具集).
   ...
 
 >>> 写一个 hello.txt 内容是 hello world
@@ -101,21 +107,25 @@ bye!
 ## SDK 用法核心
 
 ```python
-from tongagents.agents.llm import ModelConfig, ModelProvider
+# cli_sample.py 核心 (去掉 .env / imports / 错误处理)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from tools import register_default_tools  # 本地 tools/ 子包
+from tongagents.tools.tool_manager import ToolManager
 from tongagents.agents.llm_agent import StatelessReactAgent, ReactAgentSetting
+from tongagents.agents.llm import ModelConfig, ModelProvider
 from tongagents.agents.llm_agent.defs import LLMInputEvent
 from tongagents.agents.llm.messages import UserPromptMessage
-from tongagents.tools.tool_manager import ToolManager
-from tongagents_cli.default_agent.tools import register_default_tools
 
-# 1. 注册 11 个默认工具
+# 1. 注册本地 6 工具
 register_default_tools()
 
-# 2. 构造 agent
+# 2. 构造 agent (从 env 读 OPENAI_*)
 llm_config = ModelConfig(model_provider=ModelProvider.OPENAI_COMPATIBLE)
-#    ↑ 从 env 自动读 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
 settings = ReactAgentSetting(
-    name="cli-sample",
+    name="cli-sample-agent",
     llm_config=llm_config,
     tool_identifier_list=list(ToolManager.tool_classes.keys()),
     system_prompt="你是 cli-sample agent, ...",
@@ -123,10 +133,10 @@ settings = ReactAgentSetting(
 agent = StatelessReactAgent(agent_settings=settings)
 
 # 3. 同步 step — 不调 .stream()
-wrap = LLMInputEvent(input=[UserPromptMessage("你的问题")])
+wrap = LLMInputEvent(input=[UserPromptMessage(q)])
 actions = agent.step(wrap)  # ← 一次同步返回 list[Action]
 for a in actions:
-    if hasattr(a, "is_final_response") and a.is_final_response:
+    if getattr(a, "is_final_response", False):
         print(a.content)
 ```
 
@@ -137,21 +147,36 @@ for a in actions:
 
 ---
 
-## 默认工具列表 (11 个)
+## 本地工具集 (cli-sample/tools/)
 
-| 工具 | 作用 |
-|---|---|
-| `bash` | 跑 shell 命令 |
-| `read_file` | 读文件 |
-| `write_file` | 写文件 |
-| `edit_file` | 精确字符串替换 |
-| `glob` | 文件名匹配 (e.g. `**/*.py`) |
-| `grep` | 内容正则搜索 |
-| `exa_search` | 网络搜索 (需 exa key) |
-| `skill` | 加载 skill 文档 |
-| `delegate_task` | 后台委派任务 |
-| `query_background_process` | 查询后台任务 |
-| `stop_task` | 停止后台任务 |
+6 个核心 OS 工具 — 从 tongagents_cli SDK `default_agent/tools.py` 复制简化.
+
+| 工具 | 作用 | 来源 |
+|---|---|---|
+| `read_file` | 读文件, 支持 offset/limit | SDK ReadFileTool 简化 |
+| `write_file` | 写文件, 自动建父目录, 支持 append | SDK WriteFileTool 简化 |
+| `edit_file` | 精确字符串替换 (Task #2565 模式) | SDK EditFileTool 简化 |
+| `bash` | shell 命令执行 (本地直跑, 无沙箱) | SDK BashTool `_execute_directly` |
+| `glob` | 文件名通配符匹配 (`**/*.py`) | SDK GlobTool 简化 |
+| `grep` | 内容正则搜索 | SDK GrepTool 简化 |
+
+> **省略的工具** (vs tongagents_cli 11 个):
+> - `exa_search` — 依赖外部 Exa API
+> - `skill` — 依赖 SDK 内部 hooks
+> - `delegate_task` / `query_background_process` / `stop_task` — 依赖 subagent + 后台进程管理
+
+每个工具一个文件, 类名跟 SDK 一致 (方便以后升级 / 替换):
+
+```
+cli-sample/tools/
+├── __init__.py         # register_default_tools() + 自动注册
+├── read_file_tool.py   # ReadFileTool
+├── write_file_tool.py  # WriteFileTool
+├── edit_file_tool.py   # EditFileTool
+├── bash_tool.py        # BashTool
+├── glob_tool.py        # GlobTool
+└── grep_tool.py        # GrepTool
+```
 
 ---
 
@@ -159,10 +184,18 @@ for a in actions:
 
 ```
 cli-sample/
-├── cli_sample.py       # 主程序 (REPL + SDK agent + step)
-├── pyproject.toml      # 依赖 tongagents==2.7.20 + tongagents-cli + python-dotenv
-├── README.md           # 本文件
-└── .env.example        # API key + BASE_URL + MODEL 配置模板
+├── cli_sample.py        # 主程序 (REPL + StatelessReactAgent + 本地 tools/)
+├── tools/               # 本地工具实现 (从 SDK 复制简化)
+│   ├── __init__.py
+│   ├── read_file_tool.py
+│   ├── write_file_tool.py
+│   ├── edit_file_tool.py
+│   ├── bash_tool.py
+│   ├── glob_tool.py
+│   └── grep_tool.py
+├── pyproject.toml       # 依赖: tongagents==2.7.20 + python-dotenv (无 tongagents-cli)
+├── README.md            # 本文件
+└── .env.example         # API key + BASE_URL + MODEL 配置模板
 ```
 
 ---
@@ -175,26 +208,26 @@ cli-sample/
 python -c "import ast; ast.parse(open('cli_sample.py').read()); print('cli_sample.py syntax OK')"
 ```
 
-### 2. SDK 导入测试 (不调 LLM)
+### 2. 工具导入 + 注册测试 (不调 LLM)
 
 ```bash
 python -c "
-import os
-from dotenv import load_dotenv
-load_dotenv('~/work/codework/tong_agents/Tong-Agent/.env', override=True)
-from tongagents_cli.default_agent.tools import register_default_tools
+from tools import register_default_tools
 register_default_tools()
 from tongagents.tools.tool_manager import ToolManager
 print('tools:', sorted(ToolManager.tool_classes.keys()))
 "
+# 期望: tools: ['bash', 'edit_file', 'glob', 'grep', 'read_file', 'write_file']
 ```
 
 ### 3. REPL 端到端测试 (需 .env)
 
 ```bash
 cp ~/work/codework/tong_agents/Tong-Agent/.env .env
-printf '你好\n列出当前目录\nexit\n' | python cli_sample.py
+printf '你好\n列出当前目录\n读 README.md\nexit\n' | python cli_sample.py
 ```
+
+**预期**: SDK 自动跑 LLM + 自动选工具 + 自动拼回回复, 3 个 query 全过.
 
 ---
 
@@ -202,13 +235,16 @@ printf '你好\n列出当前目录\nexit\n' | python cli_sample.py
 
 | 维度 | TongAgentCLI (官方) | cli-sample (本样例) |
 |---|---|---|
-| 代码量 | ~几千行 (TUI + skills + session) | ~200 行 (单文件) |
-| Agent | `WorkflowWithMemory.create(json).stream()` | `StatelessReactAgent.step()` (同步) |
-| 流式 | 必须 `.stream()` | ❌ 不调, 一次同步返回 |
-| 工具 | 11 个 SDK 默认 + skills + plugins | 11 个 SDK 默认 |
-| 学习曲线 | 高 (workflow JSON / session / plugins) | 低 (一个 `step()` 看懂) |
+| 代码 | ~几千行 (TUI + skills + session) | ~250 行 + 6 个工具文件 |
+| LLM 调用 | SDK StatelessReactAgent / InteractiveMode | SDK StatelessReactAgent — **同款** |
+| 工具数 | 11 个 (含 Exa / Skill / 后台进程) | 6 个核心 OS 工具 (本地实现) |
+| 依赖 tongagents-cli | ✅ | ❌ (本地 tools/) |
+| Session / Memory | ✅ (持久化历史) | ❌ (极简, 每次 step 新建 agent) |
+| TUI | ✅ (Textual) | ❌ (纯 stdin/stdout REPL) |
+| 学习曲线 | 高 (TUI / session / skills 概念) | 低 (看 `step()` 30 行就懂 SDK 怎么用) |
 
-适合想看 **最小可运行骨架** 的同学. 想看生产级 CLI 看 `tongagents-cli`.
+适合想看 **最小可运行骨架 + 理解 SDK StatelessReactAgent + 本地工具集成** 的同学.
+想看生产级 CLI 看 `tongagents-cli`.
 
 ---
 
@@ -216,5 +252,4 @@ printf '你好\n列出当前目录\nexit\n' | python cli_sample.py
 
 - [Tong-Agent](https://github.com/temp-bigai/Tong-Agent) - 完整 SDK + CLI
 - [tongagents-course](https://github.com/temp-bigai/tongagents-course) - 课程仓库 (本仓库)
-- [tongagents SDK 2.7.20](https://pypi.org/project/tongagents/2.7.20/) - SDK 版本
-- [tongagents-cli 2.7.20](https://pypi.org/project/tongagents-cli/) - CLI 工具
+- [tongagents SDK 2.7.20](https://pypi.org/project/tongagents/2.7.20/) - 核心 SDK (Agent 抽象类 + StatelessReactAgent + WorkflowWithMemory)

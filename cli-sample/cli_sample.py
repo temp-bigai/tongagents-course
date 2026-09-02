@@ -5,8 +5,9 @@ cli-sample: 用 TongAgent SDK StatelessReactAgent 的最简 CLI
 仿造 Tong-Agent 的 CLI, 但极简化:
 - 单文件 REPL 循环 (Read-Eval-Print)
 - 调用 TongAgent SDK 的 StatelessReactAgent (同步 step() 接口, 不调 .stream())
-- SDK 默认工具集 (11 个): bash / read_file / write_file / edit_file / glob / grep /
-  exa_search / skill / delegate_task / query_background_process / stop_task
+- **本地工具集 (cli-sample/tools/)**: 6 个核心 OS 工具
+  (read_file / write_file / edit_file / bash / glob / grep)
+  从 tongagents_cli SDK 复制简化实现, **不依赖 tongagents-cli 包**
 - 用户问"读 / 写 / 列"时 SDK 自动调对应工具
 - 输入 'exit' / 'quit' / Ctrl+D 退出
 
@@ -19,8 +20,8 @@ cli-sample: 用 TongAgent SDK StatelessReactAgent 的最简 CLI
     # 1. 复制 Tong-Agent 的 .env (含 OPENAI_* 三件套)
     cp ~/work/codework/tong_agents/Tong-Agent/.env .env
 
-    # 2. 装 SDK
-    pip install tongagents==2.7.20 tongagents-cli python-dotenv
+    # 2. 装 SDK (不需要 tongagents-cli)
+    pip install tongagents==2.7.20 python-dotenv
     #    (或 uv sync)
 
     # 3. 跑
@@ -34,8 +35,16 @@ cli-sample: 用 TongAgent SDK StatelessReactAgent 的最简 CLI
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Iterator
+
+# 把 cli-sample/ 加入 sys.path, 让脚本能找到本地 tools/ 子包.
+# (脚本运行: python cli_sample.py — cli-sample.py 所在的 dir 默认已在 sys.path,
+#  所以可以 `from tools import ...`)
+_CLI_SAMPLE_DIR = Path(__file__).resolve().parent
+if str(_CLI_SAMPLE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CLI_SAMPLE_DIR))
 
 # ============================================================
 # TongAgent SDK 的 mcp 子模块用 importlib.metadata.version("mcp") 探测版本,
@@ -84,15 +93,15 @@ from tongagents.agents.llm import ModelConfig, ModelProvider  # noqa: E402
 from tongagents.agents.llm_agent.defs import LLMInputEvent  # noqa: E402
 from tongagents.agents.llm.messages import UserPromptMessage  # noqa: E402
 
-# SDK 默认工具注册 (11 个工具)
-from tongagents_cli.default_agent.tools import register_default_tools  # noqa: E402
+# 本地工具集 (cli-sample/tools/) — 不依赖 tongagents-cli
+from tools import register_default_tools  # noqa: E402  # type: ignore
 from tongagents.tools.tool_manager import ToolManager  # noqa: E402
 
 
 # ============================================================
-# 注册 SDK 默认工具 + 构造 StatelessReactAgent
+# 注册本地默认工具 + 构造 StatelessReactAgent
 # ============================================================
-# 必须在构造 Agent 之前调用, 把 11 个工具注册到 SDK 内部 ToolManager.
+# 必须在构造 Agent 之前调用, 把 6 个本地工具注册到 SDK 内部 ToolManager.
 register_default_tools()
 
 # SDK 读 env 自己填 (OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 都在 env 里).
@@ -191,10 +200,10 @@ class CliSampleAgent(Agent):
 # ============================================================
 BANNER = """
 ============================================================
-  cli-sample: TongAgents CLI 极简样例 (走 SDK)
+  cli-sample: TongAgents CLI 极简样例 (走 SDK, 本地工具集)
 ============================================================
   Agent: StatelessReactAgent (SDK default)
-  工具: {tool_count} 个 (bash / write / read / edit / glob / grep / ...)
+  工具: {tool_count} 个本地工具 (read / write / edit / bash / glob / grep)
   模型: {model}
   端点: {base_url}
 ============================================================

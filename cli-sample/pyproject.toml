@@ -1,14 +1,16 @@
 [project]
 name = "tongagents-cli-sample"
-version = "0.1.0"
-description = "Minimal CLI sample using TongAgents SDK (default agent + 11 tools)"
+version = "0.3.0"
+description = "Minimal CLI sample using TongAgents SDK (default agent + local tools)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
+    # tongagents SDK (核心: Agent 抽象类 + StatelessReactAgent)
     "tongagents==2.7.20",
-    "tongagents-cli>=2.7.20",
+    # dotenv (读 .env)
     "python-dotenv>=1.0.0",
+    # ❌ 不再依赖 tongagents-cli — 工具实现复制到本地 tools/ 子包
 ]
 
 # BigAI Nexus 私有源 (与 lesson4 一致)
@@ -18,7 +20,9 @@ url = "https://nexus.mybigai.ac.cn/repository/pypi/simple/"
 
 [tool.uv.sources]
 tongagents = { index = "nexus" }
-tongagents-cli = { index = "nexus" }
 
 [tool.setuptools]
 py-modules = ["cli_sample"]
+
+[tool.setuptools.package-dir]
+tools = "tools"
