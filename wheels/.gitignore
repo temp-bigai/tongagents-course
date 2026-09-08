@@ -1,0 +1,5 @@
+# 本地 wheel 包 (大文件, 不进 git)
+# 开发者从项目维护者获取 wheels/*.whl 文件
+tongagents-*.whl
+tongagents_cli-*.whl
+!wheels/.gitignore

@@ -1,0 +1,20 @@
+[project]
+name = "tongagents-cli-sample"
+version = "0.4.0"
+description = "Minimal CLI sample using TongAgents SDK (default agent + local tools, 本地 wheel 安装)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # tongagents SDK 从 ../wheels/ 本地 wheel 安装 (不走 nexus, 见 INSTALL.md)
+    # pip install ./wheels/tongagents-*.whl ./wheels/tongagents_cli-*.whl
+    # dotenv (读 .env)
+    "python-dotenv>=1.0.0",
+    # ❌ 不依赖 tongagents-cli — 工具实现复制到本地 tools/ 子包
+]
+
+[tool.setuptools]
+py-modules = ["cli_sample"]
+
+[tool.setuptools.package-dir]
+tools = "tools"

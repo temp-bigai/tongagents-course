@@ -9,13 +9,14 @@
 
 完成本课后，你将掌握：
 
-1. ✅ **Prompt Engineering 的 6 阶段演进**（Zero-shot → Few-shot → CoT → Self-Consistency → ToT → RAG）
-2. ✅ **CoT（Chain-of-Thought）**：用 step-by-step prompt 提升推理能力
-3. ✅ **Self-Consistency**：多路径采样 + 投票
-4. ✅ **ToT（Tree of Thoughts）**：树形搜索 + 评估剪枝
-5. ✅ **RAG（Retrieval-Augmented Generation）**：检索 + 生成
-6. ✅ **PromptTemplate**：把 prompt 抽象成可复用模板
-7. ✅ 用 tongagents SDK 的 `Agent` + `AgentSettings` 实现"CoT Prompt Agent"（PPT Slide 43）
+1. ✅ 从**本地 wheel** 安装 TongAgents SDK（**不依赖 BigAI Nexus**）
+2. ✅ **Prompt Engineering 的 6 阶段演进**（Zero-shot → Few-shot → CoT → Self-Consistency → ToT → RAG）
+3. ✅ **CoT（Chain-of-Thought）**：用 step-by-step prompt 提升推理能力
+4. ✅ **Self-Consistency**：多路径采样 + 投票
+5. ✅ **ToT（Tree of Thoughts）**：树形搜索 + 评估剪枝
+6. ✅ **RAG（Retrieval-Augmented Generation）**：检索 + 生成
+7. ✅ **PromptTemplate**：把 prompt 抽象成可复用模板
+8. ✅ 用 tongagents SDK 的 `Agent` + `AgentSettings` 实现"CoT Prompt Agent"（PPT Slide 43）
 
 ---
 
@@ -24,7 +25,8 @@
 ```
 lesson2/
 ├── README.md                 # 本文件（课程主入口）
-├── INSTALL.md                # 详细安装文档（继承 lesson1）
+├── INSTALL.md                # 详细安装文档（本地 wheel 方式）
+├── pyproject.toml            # Python 项目配置（不含 nexus）
 ├── requirements.txt          # Python 依赖清单
 ├── .env.example              # 环境变量模板
 ├── .gitignore                # Python/venv/db 忽略
@@ -45,55 +47,63 @@ lesson2/
     └── test_cot_prompt_agent.py
 ```
 
+> 💡 **`wheels/` 目录**: 本课程 3 个示例（`cli-sample/`、`lesson1/`、`lesson2/`）共用同一份
+> wheel 文件, 放在**仓库根目录**的 `wheels/` 下。
+
 ---
 
 ## 🚀 快速开始
 
-### 1. 安装（5 分钟）
-
-参考 [INSTALL.md](./INSTALL.md)。TL;DR：
+### 1. 准备 wheels（一次性）
 
 ```bash
-# 1.1 配置 pip 使用 BigAI Nexus
-mkdir -p ~/.config/pip
-cat > ~/.config/pip/pip.conf << 'EOF'
-[global]
-index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/
-extra-index-url = https://pypi.org/simple
-trusted-host =
-    nexus.mybigai.ac.cn
-    pypi.org
-EOF
-
-# 1.2 安装依赖
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# 从项目维护者获取 wheel 文件, 放到仓库根目录 wheels/
+cd tongagents-course
+ls ../wheels/
+# 期望看到 tongagents-*.whl + tongagents_cli-*.whl (各 1 个或 2 个)
 ```
 
-### 2. 跑示例
+### 2. 安装（5 分钟）
+
+参考 [INSTALL.md](./INSTALL.md) 详细步骤。TL;DR：
 
 ```bash
-# 2.1 PromptTemplate 基础
+cd lesson2
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+
+# 装本地 wheel (不走 nexus, 不走 [tool.uv.sources])
+pip install ../wheels/tongagents-*.whl
+pip install ../wheels/tongagents_cli-*.whl
+
+# 装 lesson2 依赖
+pip install -e .
+```
+
+### 3. 跑 6 个示例
+
+```bash
+# 3.1 PromptTemplate 基础
 python prompt_template.py
 
-# 2.2 CoT Demo（Echo → CoT 升级）
+# 3.2 CoT Demo（Echo → CoT 升级）
 python cot_demo.py
 
-# 2.3 Self-Consistency（多路径采样 + 投票）
+# 3.3 Self-Consistency（多路径采样 + 投票）
 python cot_self_consistency.py
 
-# 2.4 ToT（树形搜索）
+# 3.4 ToT（树形搜索）
 python tot_demo.py
 
-# 2.5 RAG（检索 + 生成）
+# 3.5 RAG（检索 + 生成）
 python rag_demo.py
 
-# 2.6 CoT Prompt Agent（PPT Slide 43）
+# 3.6 CoT Prompt Agent（PPT Slide 43）
 python cot_prompt_agent.py
 ```
 
-### 3. 跑测试
+### 4. 跑测试
 
 ```bash
 python -m pytest tests/ -v
@@ -206,7 +216,7 @@ result = agent.step("A train travels 60 mph for 2 hours. How far?")
 # }
 ```
 
-### 9. 作业：实现 CoT Prompt Agent
+### 8. 作业：实现 CoT Prompt Agent
 
 1. 给 `cot_prompt_agent.py` 加一个 `_call_llm()` 方法，**真实调用** `self.llm.generate(prompt)`
 2. 加一个 `test_llm_integration.py`（mock LLM）
@@ -270,6 +280,12 @@ Q → [检索 top-k 文档] → context + Q → LLM → A
 
 ## 🛠 常见问题
 
+### Q: 为什么用本地 wheel 而不是 Nexus？
+
+A: **开发者通常无 BigAI 内网访问权限**。改用本地 wheel 后, 整个安装流程**完全离线**,
+不依赖 Nexus 凭据 / `~/.config/pip/pip.conf` / `[tool.uv.sources]` editable 源。
+课程维护者负责构建 + 分发 wheel, 开发者只负责 `pip install ./wheels/*.whl`。
+
 ### Q: PromptTemplate 一定要 dataclass 吗？
 
 A: 本课选 dataclass 是因为：
@@ -308,9 +324,8 @@ A: 本课是教学用内存版。生产推荐：
 
 ## 📖 参考资料
 
-- [INSTALL.md](./INSTALL.md) — 详细安装文档
+- [INSTALL.md](./INSTALL.md) — 详细安装文档（本地 wheel 方式）
 - [tongagents-course 仓库](https://github.com/temp-bigai/tongagents-course)
-- [BigAI Nexus](https://nexus.mybigai.ac.cn/)
 - [Wei et al. (2022) — Chain-of-Thought Prompting](https://arxiv.org/abs/2201.11903)
 - [Wang et al. (2022) — Self-Consistency](https://arxiv.org/abs/2203.11171)
 - [Yao et al. (2023) — Tree of Thoughts](https://arxiv.org/abs/2305.10601)
