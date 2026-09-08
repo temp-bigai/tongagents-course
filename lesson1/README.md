@@ -8,7 +8,7 @@
 
 完成本课后，你将掌握：
 
-1. ✅ 从 **BigAI Nexus**（私有 PyPI）安装 TongAgents SDK + CLI
+1. ✅ 从**本地 wheel** 安装 TongAgents SDK + CLI（**不依赖 BigAI Nexus**）
 2. ✅ 理解 `tongagents` 包的核心 API：`Agent`、`AgentSettings`、`node_declare`、`Workflow`
 3. ✅ 用 3 种方式调用 Agent（直接调用 / 流式 / Workflow 编排）
 4. ✅ 编写你的第一个可运行、可测试的 TongAgents Agent
@@ -20,7 +20,8 @@
 ```
 lesson1/
 ├── README.md              # 本文件（课程主入口）
-├── INSTALL.md             # 详细安装文档（pip.conf + Nexus wheel）
+├── INSTALL.md             # 详细安装文档（本地 wheel 方式）
+├── pyproject.toml         # Python 项目配置（不含 nexus）
 ├── requirements.txt       # Python 依赖清单
 ├── .env.example           # 环境变量模板
 ├── echo_agent.py          # 主示例：Echo Agent（import tongagents）
@@ -33,54 +34,67 @@ lesson1/
     └── test_node_declare.py   # @node_declare 单元测试
 ```
 
+> 💡 **`wheels/` 目录**: 本课程 3 个示例（`cli-sample/`、`lesson1/`、`lesson2/`）共用同一份
+> wheel 文件, 放在**仓库根目录**的 `wheels/` 下。开发者 clone 后从项目维护者获取。
+
 ---
 
 ## 🚀 快速开始
 
-### 1. 安装（5 分钟）
+### 1. 准备 wheels（一次性）
+
+```bash
+# 从项目维护者获取 wheel 文件, 放到仓库根目录 wheels/
+cd tongagents-course
+ls wheels/
+# 期望看到:
+# tongagents-2.7.21-cp312-cp312-linux_x86_64.whl
+# tongagents_cli-1.8.22-cp312-cp312-linux_x86_64.whl
+# (或 py3-none-any 通用 wheel)
+```
+
+### 2. 安装（5 分钟）
 
 参考 [INSTALL.md](./INSTALL.md) 详细步骤。TL;DR：
 
 ```bash
-# 1.1 配置 pip 使用 BigAI Nexus
-mkdir -p ~/.config/pip
-cat > ~/.config/pip/pip.conf << 'EOF'
-[global]
-index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/
-extra-index-url = https://pypi.org/simple
-trusted-host =
-    nexus.mybigai.ac.cn
-    pypi.org
-EOF
-
-# 1.2 创建 venv 并安装依赖
+cd lesson1
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+
+# 装本地 wheel (不走 nexus, 不走 [tool.uv.sources])
+pip install ../wheels/tongagents-*.whl
+pip install ../wheels/tongagents_cli-*.whl
+
+# 装 lesson1 依赖
+pip install -e .
 ```
 
-### 2. 验证安装
+### 3. 验证安装
 
 ```bash
 # 验证 SDK + CLI
-tongagents --version
-python -c "import tongagents; print(tongagents.__version__)"
+python -c "import tongagents; print('tongagents', tongagents.__version__)"
+python -c "from tongagents.agent import Agent, AgentSettings; print('SDK OK')"
 ```
 
-预期：`tongagents-cli, version 1.8.19` + `2.7.19`
+预期：`tongagents 2.7.21` + `SDK OK`
 
-### 3. 跑第一个 Echo Agent
+### 4. 跑 3 个示例
 
 ```bash
-# 3.1 主示例
+# 4.1 主示例: Echo Agent
 python echo_agent.py
 
-# 3.2 辅助示例
+# 4.2 AgentSettings 用法
 python agent_settings_demo.py
+
+# 4.3 @node_declare 装饰器 + Workflow
 python node_declare_demo.py
 ```
 
-### 4. 跑测试
+### 5. 跑测试
 
 ```bash
 python -m pytest tests/ -v
@@ -194,41 +208,42 @@ python -m pytest tests/test_node_declare.py -v
 
 ## 🛠 常见问题
 
-### Q: 为什么用 Nexus 而不是 PyPI？
+### Q: 为什么用本地 wheel 而不是 Nexus？
 
-A: `tongagents` 依赖 `tong-env`（BigAI 平台私有包），只在 Nexus 镜像中存在。同时 Nexus 同步了所有公开 PyPI 包作为 fallback（`extra-index-url`）。
+A: **开发者通常无 BigAI 内网访问权限**。改用本地 wheel 后, 整个安装流程**完全离线**,
+不依赖 Nexus 凭据 / `~/.config/pip/pip.conf` / `[tool.uv.sources]` editable 源。
+课程维护者负责构建 + 分发 wheel, 开发者只负责 `pip install ./wheels/*.whl`。
+
+### Q: wheel 与 Python 版本不匹配怎么办？
+
+A: 默认提供 2 套 wheel:
+
+- `cp312-cp312-linux_x86_64.whl` (推荐, 小) — Linux x86_64 + Python 3.12
+- `py3-none-any.whl` (跨平台, 大) — 任何平台 + Python >= 3.11
+
+macOS / ARM64 / 其他 Python 版本请用 `py3-none-any.whl`。
 
 ### Q: 我能在 Windows 上跑吗？
 
-A: 可以。Nexus 上有 `cp312-cp312-win_amd64.whl`。直接 `pip install tongagents tongagents-cli` 即可。
-
-### Q: 我能在 Apple Silicon (M1/M2) 上跑吗？
-
-A: 当前发布的 wheel 只有 `linux_x86_64` 和 `win_amd64`。Apple Silicon 需要源码安装：
-
-```bash
-pip install tongagents --no-binary :all: \
-    --index-url https://nexus.mybigai.ac.cn/repository/pypi/simple/
-```
+A: 可以。Linux wheel 是 `linux_x86_64`, Windows 需用 `py3-none-any.whl` (含 C 源码)。
 
 ### Q: 怎么升级？
 
 ```bash
-pip install --upgrade tongagents tongagents-cli
+pip install --upgrade ../wheels/tongagents-*.whl
+pip install --upgrade ../wheels/tongagents_cli-*.whl
 ```
 
 ---
 
 ## 📚 下一步
 
-- **lesson2**：Workflow 进阶（条件分支 / 循环 / 异常处理）
+- **lesson2**：Prompt Engineering 进阶（CoT / Self-Consistency / ToT / RAG）
 - **lesson3**：LLM Agent（ReactAgent / ModelConfig）
-- **选修1**：把 Echo Agent 接入 MCP Server
 
 ---
 
 ## 📖 参考资料
 
-- [INSTALL.md](./INSTALL.md) — 详细安装文档
+- [INSTALL.md](./INSTALL.md) — 详细安装文档（本地 wheel 方式）
 - [tongagents-course 仓库](https://github.com/temp-bigai/tongagents-course)
-- [BigAI Nexus](https://nexus.mybigai.ac.cn/)

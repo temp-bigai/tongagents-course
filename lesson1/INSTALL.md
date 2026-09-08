@@ -1,6 +1,7 @@
-# Lesson 1 安装文档 — TongAgents SDK + CLI
+# Lesson 1 安装文档 — 本地 wheel 方式 (无 Nexus 权限)
 
-本文档详细描述如何从 **BigAI Nexus**（私有 PyPI 镜像）安装 TongAgents SDK 和 CLI。
+> **v0.2.0 重要变更**: 本示例 **不再依赖 BigAI Nexus 私有源**。开发者只需要拿到项目维护者
+> 提供的 2 个本地 wheel 文件, 用 `pip install ./wheels/*.whl` 即可, 完全离线安装。
 
 ---
 
@@ -10,118 +11,69 @@
 |---|---|
 | Python | **>= 3.11**（推荐 3.12） |
 | pip | **>= 21.3**（支持 PEP 517） |
-| 操作系统 | Linux x86_64 / Windows amd64 / macOS（仅源码） |
-| 网络 | 可访问 `nexus.mybigai.ac.cn` |
+| 操作系统 | Linux x86_64 / Windows amd64 / macOS |
+| 网络 | **不需要**访问 Nexus, 全部依赖在本地 wheel |
 
-```bash
-python3 --version  # 确认 3.11 / 3.12
-python3 -m pip --version
-```
+> ✅ **不需要** pip.conf / Nexus 凭据 / `[tool.uv.sources]` editable
 
 ---
 
-## 1. 配置 pip 使用 BigAI Nexus
+## 1. 准备 wheels 目录
 
-### 1.1 找到 pip 配置文件位置
-
-```bash
-python3 -m pip config debug  # 查看当前生效的配置
-```
-
-### 1.2 写入 pip.conf（推荐）
-
-#### Linux / macOS：`~/.config/pip/pip.conf`
+从项目维护者获取 wheels 文件, 放到**仓库根目录**的 `wheels/` 下:
 
 ```bash
-mkdir -p ~/.config/pip
-cat > ~/.config/pip/pip.conf << 'EOF'
-[global]
-index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/
-extra-index-url = https://pypi.org/simple
-trusted-host =
-    nexus.mybigai.ac.cn
-    pypi.org
-EOF
+cd tongagents-course    # 仓库根目录
+mkdir -p wheels
+# 把维护者给的 wheel 复制到 wheels/
+cp /path/to/tongagents-*.whl wheels/
+cp /path/to/tongagents_cli-*.whl wheels/
+
+ls -lh wheels/
+# 期望看到:
+# tongagents-2.7.21-cp312-cp312-linux_x86_64.whl   (16M, 推荐)
+# tongagents-2.7.21-py3-none-any.whl                (38M, 跨平台)
+# tongagents_cli-1.8.22-cp312-cp312-linux_x86_64.whl (5.1M, 推荐)
+# tongagents_cli-1.8.22-py3-none-any.whl            (7.8M, 跨平台)
 ```
 
-#### Windows：`%APPDATA%\pip\pip.ini`
-
-```ini
-[global]
-index-url = https://nexus.mybigai.ac.cn/repository/pypi/simple/
-extra-index-url = https://pypi.org/simple
-trusted-host =
-    nexus.mybigai.ac.cn
-    pypi.org
-```
-
-### 1.3 临时使用 Nexus（无需改配置）
-
-```bash
-pip install tongagents \
-    --index-url https://nexus.mybigai.ac.cn/repository/pypi/simple/ \
-    --extra-index-url https://pypi.org/simple
-```
+> 💡 **优先用 `cp312-cp312-linux_x86_64.whl`**（小）；macOS / ARM64 / 其他 Python 版本请用 `py3-none-any.whl`（含 C 源码）。
 
 ---
 
-## 2. 创建虚拟环境（推荐）
+## 2. 配置 pip 临时使用 Nexus（**不需要** — 已废弃）
+
+> ⚠️ v0.2.0 已废弃。本节保留仅为对比参考, 实际安装请走第 3 节本地 wheel 方式。
+
+---
+
+## 3. 创建虚拟环境（推荐）
 
 ```bash
+cd lesson1
 python3 -m venv .venv
 source .venv/bin/activate          # Linux / macOS
 # .venv\Scripts\activate           # Windows PowerShell
+
+python -m pip install --upgrade pip  # 升级 pip (避免老版本解析问题)
 ```
 
 ---
 
-## 3. 安装 TongAgents SDK
-
-### 3.1 安装最新版（Cython 加密 wheel）
+## 4. 安装本地 wheel（核心步骤）
 
 ```bash
-pip install --upgrade tongagents
+# 4.1 装 tongagents SDK (Agent / AgentSettings / Workflow / node_declare)
+pip install ../wheels/tongagents-*.whl
+
+# 4.2 装 tongagents_cli (CLI 工具, SDK 间接依赖)
+pip install ../wheels/tongagents_cli-*.whl
+
+# 4.3 装 lesson1 自身依赖 (pytest / python-dotenv)
+pip install -e .
 ```
 
-**当前最新版本**：`tongagents-2.7.19`（Cython 加密 wheel，~16 MB）
-
-### 3.2 指定版本安装
-
-```bash
-# Linux x86_64 + Python 3.12
-pip install tongagents==2.7.19 \
-    --index-url https://nexus.mybigai.ac.cn/repository/pypi/simple/
-
-# 跨平台源码安装（macOS / 未发布 wheel 的平台）
-pip install tongagents==2.7.19 \
-    --index-url https://nexus.mybigai.ac.cn/repository/pypi/simple/ \
-    --no-binary :all:
-```
-
-### 3.3 依赖说明
-
-`tongagents` 的运行时依赖包括：
-
-- **LLM 栈**：`pydantic>=2.10.5`、`litellm==1.65.0`、`langchain-community`、`langchain-openai`、`langchain-ollama`
-- **数据栈**：`pandas`、`pyarrow`、`pypdf`、`openpyxl`、`pymupdf`、`docx2txt`、`unstructured`、`bs4`、`xlrd`
-- **服务栈**：`fastapi`、`uvicorn`、`boto3`、`aiobotocore`、`s3fs`、`fsspec`、`jinja2`、`httpx`、`sqlalchemy`、`psycopg2-binary`、`redis`
-- **可观测性**：`opentelemetry-distro` + 多个 instrumentation 子包
-- **MCP**：`mcp[cli]>=1.10.1,<1.27`
-- **平台**：`tong-env>=0.1.0`（Nexus 私有包）
-
-> 全部依赖会通过 pip 自动从 Nexus + PyPI 联合解析，无需手动处理。
-
----
-
-## 4. 安装 CLI（tongagents-cli）
-
-```bash
-pip install --upgrade tongagents-cli
-```
-
-**当前最新版本**：`tongagents_cli-1.8.19`
-
-CLI 额外依赖：`click`、`rich`、`prompt-toolkit`、`textual`、`pyyaml`、`croniter`、`mcp[cli]`、`python-dotenv`、`httpx`。
+> ⚠️ **顺序很重要**: 先 wheel, 再 `-e .`。否则 lesson1 会去 PyPI 找 tongagents 失败。
 
 ---
 
@@ -129,16 +81,9 @@ CLI 额外依赖：`click`、`rich`、`prompt-toolkit`、`textual`、`pyyaml`、
 
 ```bash
 # 5.1 验证 Python 模块
-python -c "import tongagents; print('tongagents', tongagents.__version__, tongagents.__file__)"
+python -c "import tongagents; print('tongagents', tongagents.__version__)"
 
-# 5.2 验证 CLI 可执行
-tongagents --version
-# 预期输出：tongagents-cli, version 1.8.19
-
-# 5.3 验证 CLI 帮助
-tongagents --help | head -20
-
-# 5.4 验证 SDK 核心 API
+# 5.2 验证 SDK 核心 API
 python -c "
 from tongagents.agent import Agent, AgentSettings
 from tongagents.workflow.simple_workflow import (
@@ -147,65 +92,95 @@ from tongagents.workflow.simple_workflow import (
 print('All SDK core APIs importable.')
 print('AgentSettings fields:', list(AgentSettings.model_fields.keys()))
 "
+
+# 5.3 验证本地示例可跑
+python echo_agent.py
+python agent_settings_demo.py
+python node_declare_demo.py
 ```
 
-预期输出（截选）：
+预期输出:
 
 ```
-tongagents 2.7.19 /home/user/.venv/lib/python3.12/site-packages/tongagents/__init__.py
-tongagents-cli, version 1.8.19 (commit wheel install)
+tongagents 2.7.21
 All SDK core APIs importable.
 AgentSettings fields: ['name', 'description', 'capabilities', 'model', 'temperature', 'max_iterations', 'verbose', 'topic']
 ```
 
 ---
 
-## 6. 升级 / 卸载
+## 6. 跑测试
 
 ```bash
-# 升级到最新
-pip install --upgrade tongagents tongagents-cli
+python -m pytest tests/ -v
+```
+
+预期：32 个测试 PASS。
+
+---
+
+## 7. 升级 / 卸载
+
+```bash
+# 升级 wheel
+pip install --upgrade ../wheels/tongagents-*.whl
+pip install --upgrade ../wheels/tongagents_cli-*.whl
 
 # 查看本地版本
 pip show tongagents
-pip show tongagents-cli
+pip show tongagents_cli
 
 # 卸载
-pip uninstall tongagents tongagents-cli -y
+pip uninstall tongagents tongagents-cli tongagents-lesson1 -y
 ```
 
 ---
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 找不到 tongagents 包
+### 8.1 wheel 与本地 Python ABI 不匹配
 
-- 确认 `pip.conf` 配置了 Nexus 镜像
-- 确认网络能访问 `https://nexus.mybigai.ac.cn/`
-- 确认 Python 版本 >= 3.11
+错误: `tongagents-2.7.21-cp312-cp312-linux_x86_64.whl is not a supported wheel on this platform.`
 
-### 7.2 安装时报 `tong-env>=0.1.0 not found`
+解决:
 
-`tong-env` 是 BigAI 平台私有包，**仅在 Nexus 镜像中**。请确认 `index-url` 指向 Nexus，而不是 `pypi.org`。
+```bash
+# 检查 Python 版本
+python --version   # 期望 3.12.x
 
-### 7.3 wheel 与本地 Python ABI 不匹配
+# 如果是 3.11 / 3.13 / ARM64 / macOS, 用通用 wheel
+pip uninstall tongagents tongagents-cli -y
+pip install ../wheels/tongagents-2.7.21-py3-none-any.whl
+pip install ../wheels/tongagents_cli-1.8.22-py3-none-any.whl
+```
 
-错误示例：`tongagents-2.7.19-cp312-cp312-linux_x86_64.whl is not a supported wheel on this platform.`
+### 8.2 `ModuleNotFoundError: No module named 'tongagents'`
 
-- 检查 Python 版本：`python -c "import sys; print(sys.version, sys.platform)"`
-- 当前发布 wheel：**cp311 / cp312 / cp313**（Linux x86_64、Win amd64）
-- 不支持：**Linux ARM64、macOS、Apple Silicon**（需用 `--no-binary :all:` 源码安装）
+- 确认 wheel 已装: `pip show tongagents`
+- 确认 wheel 在 `../wheels/` 目录下 (相对 lesson1)
+- 用绝对路径试一下: `pip install /abs/path/to/wheels/tongagents-*.whl`
 
-### 7.4 CLI 启动报 `ModuleNotFoundError`
+### 8.3 缺依赖 / `ImportError`
 
-执行 `pip install tongagents-cli` 会自动补齐 CLI 运行时依赖。无需额外手动安装。
+lesson1 自身依赖（pytest / python-dotenv）通过 `pip install -e .` 装。
+tongagents 的运行时依赖（pydantic / litellm / fastapi 等）随 wheel 一起装, 无需手动。
 
 ---
 
-## 8. 参考链接
+## 9. 为什么用本地 wheel?
 
-- **Nexus 镜像根目录**：`https://nexus.mybigai.ac.cn/`
-- **PyPI 简单索引**：`https://nexus.mybigai.ac.cn/repository/pypi/simple/`
-- **tongagents 包索引**：`https://nexus.mybigai.ac.cn/repository/pypi/simple/tongagents/`
-- **tongagents-cli 包索引**：`https://nexus.mybigai.ac.cn/repository/pypi/simple/tongagents-cli/`
+| 方案 | 优点 | 缺点 |
+|---|---|---|
+| **本地 wheel (推荐)** | 离线 / 不需要 Nexus 凭据 / 跨环境一致 / 版本可控 | 需维护者分发 wheel |
+| Nexus pip.conf | 自动解析依赖 | 需要内网 + 凭据 + 写 ~/.config/pip/pip.conf |
+| `[tool.uv.sources]` editable | 调试方便 | 需要 uv + 内网 + 编辑源 |
+
+本课程面向**外部开发者**（无 Nexus 权限），统一用本地 wheel。
+
+---
+
+## 10. 参考链接
+
 - **课程仓库**：`https://github.com/temp-bigai/tongagents-course`
+- **tongagents 主项目**：`https://github.com/temp-bigai/Tong-Agent`
+- **wheel 构建脚本**：`Tong-Agent/scripts/build-and-upload-tongagents.sh`

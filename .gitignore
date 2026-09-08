@@ -1,0 +1,31 @@
+# Environment / secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# SDK runtime artifacts (created by tongagents / tongagents_cli when running)
+# WorkflowWithMemory + SDK agent may create a local sqlite + traces DB on first import.
+default_sql.db
+traces.db
+*.sqlite
+*.sqlite3
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.sheet
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# uv (本课程不再使用 uv, 移除以避免误用)
+uv.lock
+.python-version
+
+# OS noise
+.DS_Store
+Thumbs.db
