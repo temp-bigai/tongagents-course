@@ -71,9 +71,9 @@ python -m pytest tests/ -v
 |---|---|---|
 | 01 | Agent 基本概念 | 演进 · 分类 · 循环 |
 | 02 | 前 Agent 时期技术 | CoT · RAG |
-| 03 | LLM API / TongAgents | SDK · CLI |
+| 03 | [Streaming 智能体](lesson3/README.md) | SDK · CLI · 流式事件 |
 | 04 | 工具使用 / MCP / Sandbox | Function Call |
-| 05 | ReAct 等经典范式 | Plan · Reflect |
+| 05 | [ReAct 论文检索综述](lesson5/README.md) | arXiv Tool · ReAct · 证据写作 |
 | 06 | 记忆与 RAG 检索 | Vector · KG |
 | 07 | 多智能体 / A2A / ANP | 协作 · 网络 |
 | 08 | 评测与自演进 | Harness |

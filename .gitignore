@@ -29,3 +29,5 @@ uv.lock
 # OS noise
 .DS_Store
 Thumbs.db
+# 教师参考实现：本地可运行，但不随课程仓库提交
+/reference-solutions/
