@@ -1,0 +1,28 @@
+[project]
+name = "tongagents-lesson1"
+version = "0.1.0"
+description = "Lesson 1 示例 — TongAgents SDK Agent / AgentSettings / @node_declare"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    # TongAgents 核心 SDK (从 BigAI Nexus 私有源装, 锁版本跟 cli-sample 一致)
+    "tongagents==2.7.20",
+    # 测试依赖
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    # 可选：读 .env
+    "python-dotenv>=1.0.0",
+]
+
+# BigAI Nexus 私有源 (与 cli-sample 一致)
+[[tool.uv.index]]
+name = "nexus"
+url = "https://nexus.mybigai.ac.cn/repository/pypi/simple/"
+
+[tool.uv.sources]
+tongagents = { index = "nexus" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
