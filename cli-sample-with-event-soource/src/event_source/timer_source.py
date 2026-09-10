@@ -1,4 +1,4 @@
-"""TimerEventSource - 定时事件源.
+"""TimerEventSource v5 — 定时事件源, 触发时调 runtime.add_event().
 
 教学版 timer, 参考 Tong-Agent tongagents_cli.event_source.handlers.TimerHandler (Task #1524+):
 
@@ -11,9 +11,14 @@ Tong-Agent 实现:
 简化点 (本实现):
 1. interval 用秒 (而不是毫秒), 更直观
 2. 不依赖 croniter (教学示例, interval 已经够用)
-3. 不走 SDK dispatcher, 直接 emit 给 Runtime
+3. 不走 SDK dispatcher, 直接 emit 给 Runtime (v5: runtime.add_event)
 4. 可选 max_count (到 N 次自动停), 方便测试
 5. 不持久化, 不走 daemon
+
+v5 改动 (相对 v4):
+- start(runtime) 而非 start(emit_callback): Source 拿到整个 runtime 引用
+- _loop(runtime) 而非 _loop(emit_callback): 触发时 runtime.add_event(event)
+- 不再有 self._emit 局部变量; 直接走 runtime
 
 Config (构造参数):
     name: 源标识
@@ -26,16 +31,15 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
-from .runtime import Event
+from .runtime import Event, EventSourceRuntime
 
 logger = logging.getLogger("event_source.timer")
 
 
 class TimerEventSource:
-    """按固定间隔 emit Event 的定时事件源."""
+    """按固定间隔 emit Event 的定时事件源 (v5)."""
 
     def __init__(
         self,
@@ -62,11 +66,15 @@ class TimerEventSource:
         self._started = False
 
     # ------------------------------------------------------------------
-    # Source protocol
+    # Source protocol (v5)
     # ------------------------------------------------------------------
 
-    def start(self, emit_callback: Callable[[Event], None]) -> None:
-        """启动定时线程. emit_callback 是 Runtime 注入的回调."""
+    def start(self, runtime: EventSourceRuntime) -> None:
+        """启动定时线程. runtime 用来触发 event (runtime.add_event).
+
+        v5: start(runtime) 而不是 start(emit_callback). Source 自己跑线程,
+        触发时直接调 runtime.add_event(event) -> runtime 内部路由到 handler.
+        """
         if self._started:
             logger.warning("[%s] already started", self.name)
             return
@@ -83,7 +91,7 @@ class TimerEventSource:
 
         self._thread = threading.Thread(
             target=self._loop,
-            args=(emit_callback,),
+            args=(runtime,),
             name=f"timer-source-{self.name}",
             daemon=True,
         )
@@ -101,10 +109,10 @@ class TimerEventSource:
         logger.info("[%s] stopped, total triggered=%d", self.name, self._count)
 
     # ------------------------------------------------------------------
-    # 内部: 主循环
+    # 内部: 主循环 (v5 简化, 无 emit_callback 局部变量)
     # ------------------------------------------------------------------
 
-    def _loop(self, emit_callback: Callable[[Event], None]) -> None:
+    def _loop(self, runtime: EventSourceRuntime) -> None:
         """定时器主循环: 每 interval_seconds 触发一次, 直到 stop 或 max_count."""
         # 用 Event.wait 而不是 time.sleep, 这样 stop() 能即时唤醒
         while not self._stop_flag.is_set():
@@ -122,9 +130,10 @@ class TimerEventSource:
                 payload={**self.payload, "tick": self._count},
             )
             try:
-                emit_callback(event)
+                # v5: 直接调 runtime.add_event, 由 runtime 路由到 handler
+                runtime.add_event(event)
             except Exception:
-                logger.exception("[%s] emit_callback raised", self.name)
+                logger.exception("[%s] runtime.add_event raised", self.name)
 
             if self.max_count is not None and self._count >= self.max_count:
                 logger.info(

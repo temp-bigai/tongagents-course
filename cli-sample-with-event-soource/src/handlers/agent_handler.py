@@ -1,41 +1,33 @@
-"""AgentHandler (v4) - 复用 cli-sample 的 agent, 不做 mini loop.
+"""AgentHandler v5 — handle(event, runtime) 把 event 包装推 runtime.input_queue.
 
-设计动机 (Task #3470):
-- 用户反馈 v3 (Task #3469) 太复杂: AgentHandler 自己实现 _mini_agent_loop /
-  _call_real_llm_loop / _execute_tool / _mock_llm_loop, 跟 cli-sample 的"单步
-  step(query) -> 拿 final response"循环重复造轮子.
-- "还是不符合我的预期, handler 里面就保留使用到的 handler 就好, 一个就行,
-   另外需要用 cli-sample 里面的命令行中的等待用户 input 和输出 agent response
-   的循环逻辑"
-- v4 设计: AgentHandler 只做一件事 — 提供一个 agent (跟 cli-sample 一样的
-  StatelessReactAgent). 不在 handler 内部调 agent.step, 不在 handler 内部做
-  tool dispatch, 不在 handler 内部做 mock fallback.
-  这一切都委托给 cli-sample 的 REPL 循环: input -> agent.step -> print.
+设计动机 (Task #3472 v5):
+- v4 问题: handle(event) 只是 stub, 实际 ES event -> user input 转换在 main.py
+  的 es_dispatcher 线程里. handler 跟 dispatcher 职责混乱.
+- v5 设计: handler 拿到 runtime 引用, 自己负责把 event 包装成 user input
+  推到 runtime.input_queue. 不再有独立的 es_dispatcher 线程.
+  Runtime 就是统一的输入总线 (user + event 一个 queue).
 
-职责 (v4, 单一):
+职责 (v5, 单一):
     1. 注册 cli-sample/tools/ 6 个工具到 SDK ToolManager
     2. 构造 StatelessReactAgent (跟 cli-sample 的 _AGENT_SETTINGS 一致)
     3. 暴露 .agent (给 main loop 用)
-    4. 提供 handle(event) 兼容接口 (虽然 v4 main loop 不通过 runtime 注册 handler,
-       但保留 handle 接口, 万一以后接 SDK dispatcher 用得上)
+    4. 实现 handle(event, runtime): 把 event 包装成 user input 推 runtime.input_queue
+       - 这是 v5 关键改动: handler 主动把 event 投到统一 input_queue
 
-对比 v3 -> v4:
-| v3                                  | v4                              |
-|-------------------------------------|---------------------------------|
-| _mini_agent_loop (mock + real 双路径) | 不实现, 由 main loop 走 cli-sample 循环 |
-| _call_real_llm_loop + SDK dispatch | 不实现                          |
-| _mock_llm_loop + 自写简易工具       | 不实现                          |
-| _bash_tool / _write_file_tool / ...  | 不实现 (用 SDK 工具)             |
-| handle(event) -> mini loop          | handle(event) 只做 mock 提示     |
-| runtime 注册 handler + bind         | runtime 不注册 handler, 只 dispatch |
-|                                     | event 到 input_queue, 然后走 user input loop |
+对比 v3 -> v4 -> v5:
+| v3                                  | v4                              | v5                              |
+|-------------------------------------|---------------------------------|---------------------------------|
+| _mini_agent_loop (mock + real)      | 不实现, 委托 main loop           | 不实现, 委托 main loop           |
+| handle(event) -> mini loop          | handle(event) 仅做 stub          | handle(event, runtime) 包装 + 推 |
+| 自己调 agent.step + tool dispatch   | 不在 handler 里                 | 不在 handler 里                 |
+| runtime dispatcher -> handle         | main.py es_dispatcher -> queue  | runtime.add_event -> handle     |
+|                                     |                                 | -> runtime.add_user_input       |
+|                                     |                                 | 单一 input_queue                |
 
 复用 cli-sample 的逻辑:
     - cli-sample/cli_sample.py: CliSampleAgent.step() (SDK StatelessReactAgent)
     - cli-sample/cli_sample.py: main() REPL (input -> step -> print)
     - cli-sample/tools/register_default_tools() (6 个工具)
-
-v4 的 main.py 完全模仿 cli-sample 的 REPL 模式, 只是 input 来源多了 ES 注入.
 """
 from __future__ import annotations
 
@@ -99,19 +91,18 @@ def _register_cli_sample_tools() -> bool:
 
 
 class AgentHandler:
-    """单 handler (v4): 只负责注册工具 + 构造 agent, 不实现 mini loop.
+    """单 handler (v5): 注册工具 + 构造 agent + 包装 event -> user input.
 
-    v4 设计: 不在 handler 里调 agent.step, 不在 handler 里 dispatch tool,
-    不在 handler 里 mock LLM. 这一切都委托给 cli-sample 的 REPL 循环
-    (在 main.py 里, 复用 cli_sample.py 的 main() 结构).
+    v5 关键改动: 实现 handle(event, runtime) — 把 event 包装成 user input
+    推 runtime.input_queue. Runtime 是统一的输入总线, handler 跟 user input
+    走同一条路径.
 
     主要属性:
         .agent: StatelessReactAgent 实例 (跟 cli-sample 一致), 供 main loop 用
         .history: 对话历史 (agent 内部的, 我们不维护自己的)
 
-    兼容接口:
-        .handle(event): 万一以后接 SDK dispatcher (runtime.add_handler + bind),
-        也可以直接调. v4 main loop 不依赖它, 仅作为兼容 stub.
+    主要方法:
+        .handle(event, runtime): v5 新签名 — 接收 runtime, 推 input_queue
     """
 
     def __init__(
@@ -171,24 +162,41 @@ class AgentHandler:
         return agent
 
     # ==================================================================
-    # Public API
+    # v5 新签名: handle(event, runtime)
     # ==================================================================
 
-    def handle(self, event: Any) -> None:
-        """兼容接口 (runtime.add_handler 后, dispatcher 会调).
+    def handle(self, event: Any, runtime: Any) -> None:
+        """v5: handler 接收 runtime, 把 event 包装成 user input 推到 runtime.input_queue.
 
-        v4 main loop 不通过 runtime 注册 handler (event 走 input_queue ->
-        cli loop). 这个 handle 仅做日志 + 提示, 不实际调 agent.step (避免
-        重复处理 — main loop 已经把 event 当 user input 跑了).
+        这是 v5 关键改动 ——
+        - handler 不再调 agent.step (避免重复处理)
+        - handler 把 event 翻译成 user input 字符串, 推 runtime.input_queue
+        - cli loop 从 runtime.input_queue 拿 (跟 user input 完全一样)
+        - agent 处理时不区分来源 (走同一条 agent.step() 路径)
 
-        如果以后要"runtime 直接 dispatch 到 handler"模式, 在这里调 agent.step
-        即可 (跟 cli-sample 的 CliSampleAgent.step 同形态).
+        Args:
+            event: Event 实例 (type/source/payload/timestamp)
+            runtime: EventSourceRuntime 实例 (用来 add_user_input / input_queue)
         """
+        user_input = self._event_to_user_input(event)
         logger.info(
-            "[%s] handle() 收到事件 %s (v4 仅做兼容提示, 不调 agent.step; "
-            "请用 main loop 把 event 当 user input 跑)",
+            "[%s] ES event -> user input (origin=es_event:%s): %s",
             self.name,
-            event,
+            event.source,
+            user_input[:120].replace("\n", " | "),
+        )
+        # v5: 推到 runtime.input_queue, 跟 user input 走同一条路径
+        runtime.add_user_input(user_input, source_tag=f"es_event:{event.source}")
+
+    def _event_to_user_input(self, event: Any) -> str:
+        """把 Event 包装成 user input 字符串 (跟 v4 一致的格式)."""
+        return (
+            f"[ES 自动输入] 我收到了一个定时事件:\n"
+            f"  - type: {event.type}\n"
+            f"  - source: {event.source}\n"
+            f"  - payload: {event.payload}\n"
+            f"  - timestamp: {event.timestamp}\n"
+            f"请利用可用工具 (bash / write_file / read_file 等) 处理这个事件."
         )
 
     # ==================================================================
