@@ -1,20 +1,32 @@
-"""Simplified EventSource Runtime (cli-sample-with-event-soource).
+"""EventSource Runtime v5 — unified queue + event mechanism.
 
-教学版 EventSource Runtime. 核心抽象:
+教学版 EventSource Runtime (Task #3472 v5). 核心抽象:
 
-    Source ──emit(Event)──▶ Runtime.queue ──dispatch──▶ Handler.handle(Event)
-                                     │
-                                     └─ bindings: source.name -> [handler]
+    Source ──emit──▶ Runtime ──route──▶ Handler ──wrap+push──▶ Runtime.input_queue
+                                                              │   (统一 user + event)
+                                                              ↓
+                                                       cli loop get_input()
 
-参考 Tong-Agent tongagents_cli.event_source.runtime (Task #1900+):
-- Tong-Agent 是单例 (get_runtime), 配合 daemon + storage 做持久化
-- 我们这里简化为直接构造, 只服务进程内生命周期
+设计动机 (v4 -> v5):
+    v4: ES dispatcher 线程独立存在, 把 Event 转 user input 推 input_queue;
+        stdin 又独立读, 不入 input_queue. 双层 queue + 多个线程, 不合理.
+    v5: EventSource 内部**拥有**统一的 input_queue (user + event 一个源);
+        handler 拿到 runtime 引用, 把 event 包装推 input_queue;
+        cli loop 从 runtime.get_input() 拿, 不关心来源.
+        stdin reader 后台线程也直接 runtime.add_user_input(), 跟 event 走同路.
 
-简化点 (相对 Tong-Agent):
+关键 API:
+    runtime.input_queue       — 统一的 input queue (dict items: origin/content/timestamp)
+    runtime.add_user_input()  — 外部 (cli stdin reader) 推 user input
+    runtime.add_event()       — Source 触发 event, 路由到 handler
+    runtime.get_input()       — cli loop 阻塞等 input (user 或 event)
+    handler.handle(event, runtime) — 新签名, 接收 runtime, 可推 input_queue
+
+参考 Tong-Agent tongagents_cli.event_source.runtime (Task #1900+), 简化点:
 1. 没有 storage / event_store 持久化
-2. 没有 daemon 后台进程 (直接前台跑, Ctrl+C 停)
-3. 没有 SDK dispatcher 耦合 (这里只是 Event -> Handler, 不触发 LLM)
-4. bindings 用 dict[source_name, list[handler]] 而不是注册回调
+2. 没有 daemon 后台进程 (前台跑, Ctrl+C 停)
+3. bindings 用 dict[source_name, list[handler]] 而不是注册回调
+4. 没有独立的 ES dispatcher 线程 (v5 把 dispatcher 逻辑下沉到 handler)
 """
 from __future__ import annotations
 
@@ -23,7 +35,7 @@ import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("event_source.runtime")
 
@@ -55,75 +67,79 @@ class Event:
         )
 
 
-# 一个事件 source 必须实现的最小协议: start(emit_cb) / stop()
+# 一个事件 source 必须实现的最小协议: start(runtime) / stop()
+# v5 改动: source 拿到的是整个 runtime (而不是 emit callback),
+# 这样 source 可以调 runtime.add_event() 触发 handler 路由.
 SourceLike = Any  # duck-typed
 
 
 class EventSourceRuntime:
-    """进程内 EventSource Runtime: 持有 source/handler 注册表 + 派发循环.
+    """进程内 EventSource Runtime (v5): 拥有统一 input_queue + event 路由.
 
-    Usage (模式 1, 默认 — handler dispatch)::
+    v5 关键改动 (相对 v4):
+    - 新增 self.input_queue: dict item (origin/content/timestamp) 的 Queue
+      - origin 字段: 'stdin' / 'es_event' / 自定义 tag
+      - cli loop 用 self.get_input(timeout) 阻塞取 input
+    - 新增 add_user_input(text, source_tag): 外部推 user input
+      - 供 stdin reader 后台线程用
+    - 新增 add_event(event): Source 触发 event, 路由到绑定 handler
+      - handler 新签名 handle(event, runtime), 拿到 runtime 引用
+      - handler 把 event 包装成 user input 推 runtime.input_queue
+    - 移除 v4 的 get_event() (外部消费者用): v5 不需要, source 直接调 add_event
+    - 移除 v4 的内部 _emit / _dispatch_loop / auto_dispatch 参数
+      - v5 路由是同步的: source.add_event() -> handler.handle() 立即执行
+      - 没有独立 dispatcher 线程, 简化
+
+    Usage::
 
         runtime = EventSourceRuntime()
-        runtime.add_source(timer_es)
-        runtime.add_handler(cli_handler)
-        runtime.bind(timer_es, cli_handler)
-        runtime.start()              # 内部 dispatcher 线程会调 cli_handler.handle(event)
-        # 或者: runtime.start(); do_other_stuff(); runtime.stop()
+        timer = TimerEventSource(name='timer', interval_seconds=5, max_count=3)
+        agent = AgentHandler(name='agent')
+        runtime.add_source(timer)
+        runtime.add_handler(agent)
+        runtime.bind(timer, agent)
 
-    Usage (模式 2, 外部消费 — external consumer)::
+        # 后台 stdin reader: 读 stdin -> runtime.add_user_input()
+        # main loop: runtime.get_input() -> agent.step(item['content'])
 
-        runtime = EventSourceRuntime(auto_dispatch=False)
-        runtime.add_source(timer_es)
-        runtime.start()
-        # 外部代码自己从 runtime._queue (或 runtime.get_event()) 拿 Event
-        # 适用于: event 走 user input loop / event 转其他协议 / 多消费者场景
+        runtime.start()  # 启动所有 source
 
     Threading:
-    - 派发循环跑在 daemon 线程, 从 queue 拿 Event 分发给绑定 handler
-      (仅在 auto_dispatch=True 时)
-    - Source 的 emit 是 thread-safe (queue.Queue)
+    - Source 自己跑后台线程 (e.g. TimerEventSource._loop)
+    - Source._loop 调 runtime.add_event(event) (线程安全, queue.Queue)
+    - add_event 同步路由 handler.handle(event, runtime) (在 source 线程里跑)
+    - handler.handle 调 runtime.input_queue.put (线程安全)
+    - cli loop 主线程: runtime.get_input() (阻塞, timeout 循环)
     """
 
-    def __init__(
-        self,
-        auto_stop_when_all_sources_finish: bool = True,
-        auto_dispatch: bool = True,
-    ) -> None:
-        """
-        Args:
-            auto_stop_when_all_sources_finish:
-                所有 source 都自然结束时是否自动 stop runtime. 默认 True.
-            auto_dispatch:
-                是否启动内部 dispatcher 线程 (从 _queue 拿 Event -> handler.handle).
-                - True (默认): 经典模式, Source -> Runtime -> Handler
-                - False: 外部消费模式, Source -> Runtime._queue (外部自己 get)
-                  适用于 event 转 user input / 跨进程传递 / 自定义 dispatch 逻辑
-                  等场景. v4 cli-sample-with-event-soource 用这个模式:
-                  event 不直接给 handler, 而是包装成 user input 注入 REPL.
-        """
+    def __init__(self) -> None:
+        # ------------------------------------------------------------------
+        # 统一 input queue (v5 新增): dict item 包含 origin/content/timestamp
+        # origin 字段标识来源: 'stdin' / 'es_event:timer_name' / 自定义 tag
+        # ------------------------------------------------------------------
+        self.input_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+
+        # 注册表 (跟 v4 一致)
         self._sources: List[SourceLike] = []
         self._handlers: List[Any] = []
-        # source_name -> [handler, ...]
-        self._bindings: Dict[str, List[Any]] = {}
-        self._queue: "queue.Queue[Event]" = queue.Queue()
+        self._bindings: Dict[str, List[Any]] = {}  # source_name -> [handler]
+
+        # 状态
         self._running: bool = False
-        self._dispatcher_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
-        # 当所有 source 都自然结束时 (比如 TimerEventSource 达到 max_count 自动退),
-        # 是否自动停掉 runtime. 默认 True, 让 main.py 不需要外部打断.
-        self._auto_stop_when_all_sources_finish = auto_stop_when_all_sources_finish
-        # 内部 dispatcher 线程是否从 _queue 消费. False 时外部代码自己 get.
-        self._auto_dispatch = auto_dispatch
-        # source.name -> 线程对象 (用来判断 source 是否还活着)
-        self._source_threads: Dict[str, Optional[threading.Thread]] = {}
+
+        # 调试用: 记录 event 历史 (handler 处理后可查)
+        self.event_history: List[Event] = []
+
+        # 调试用: 记录 user input 历史
+        self.user_input_history: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # 注册 API
     # ------------------------------------------------------------------
 
     def add_source(self, source: SourceLike) -> None:
-        """注册一个事件源. 源必须实现 start(emit_cb) / stop()."""
+        """注册一个事件源. 源必须实现 start(runtime) / stop()."""
         with self._lock:
             if source in self._sources:
                 logger.warning("Source already registered: %s", source.name)
@@ -133,7 +149,7 @@ class EventSourceRuntime:
         logger.info("Registered source: %s (type=%s)", source.name, type(source).__name__)
 
     def add_handler(self, handler: Any) -> None:
-        """注册一个事件 handler. Handler 必须有 name 属性 + handle(event) 方法."""
+        """注册一个事件 handler. Handler 必须有 name 属性 + handle(event, runtime) 方法."""
         with self._lock:
             if handler in self._handlers:
                 logger.warning("Handler already registered: %s", handler.name)
@@ -142,7 +158,7 @@ class EventSourceRuntime:
         logger.info("Registered handler: %s (type=%s)", handler.name, type(handler).__name__)
 
     def bind(self, source: SourceLike, handler: Any) -> None:
-        """绑定 source -> handler. 绑定后 source 产生的 Event 都会派发到该 handler."""
+        """绑定 source -> handler. 绑定后 source 产生的 Event 都会路由到该 handler."""
         with self._lock:
             self._bindings.setdefault(source.name, []).append(handler)
         logger.info("Bound %s -> %s", source.name, handler.name)
@@ -152,9 +168,10 @@ class EventSourceRuntime:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """启动派发线程 + 所有 source. 启动后 Runtime 进入 running 状态.
+        """启动所有 source. Source 拿到 runtime 引用 (v5 新签名).
 
-        auto_dispatch=False 时不启动内部 dispatcher 线程, 留给外部消费.
+        v5 不再有内部 dispatcher loop. Source 自己跑后台线程, 触发时
+        调 runtime.add_event(event). add_event 同步路由 handler.handle().
         """
         with self._lock:
             if self._running:
@@ -162,59 +179,26 @@ class EventSourceRuntime:
                 return
             self._running = True
 
-        # 启动派发线程 (仅在 auto_dispatch=True 时)
-        if self._auto_dispatch:
-            self._dispatcher_thread = threading.Thread(
-                target=self._dispatch_loop,
-                name="event-source-dispatcher",
-                daemon=True,
-            )
-            self._dispatcher_thread.start()
-            logger.info("内部 dispatcher 线程已启动")
-        else:
-            logger.info(
-                "auto_dispatch=False, 跳过内部 dispatcher; "
-                "外部代码请用 get_event() 或 _queue.get() 消费 Event"
-            )
-
-        # 启动所有 source (把 emit 回调传过去, 并跟踪线程句柄)
+        # 启动所有 source (把 runtime 引用传过去, v5 新签名)
         for source in self._sources:
             try:
-                source.start(self._emit)
-                # source 内部会用 threading.Thread 启动, 我们通过 name 找它
-                # (约定: TimerEventSource 用 name=f"timer-source-{self.name}")
-                thread = self._find_source_thread(source.name)
-                self._source_threads[source.name] = thread
-                logger.info("Source started: %s (thread=%s)", source.name, thread.name if thread else "?")
+                source.start(self)
+                logger.info("Source started: %s", source.name)
             except Exception:
                 logger.exception("Failed to start source: %s", source.name)
 
-    def _find_source_thread(self, source_name: str) -> Optional[threading.Thread]:
-        """根据 source.name 找到对应的线程 (靠线程名前缀匹配)."""
-        candidates = [
-            t for t in threading.enumerate()
-            if t.name.startswith("timer-source-")
-            and t.name.endswith(source_name)
-        ]
-        return candidates[0] if candidates else None
-
     def stop(self) -> None:
-        """停止所有 source + 派发线程. 幂等."""
+        """停止所有 source. 幂等."""
         with self._lock:
             if not self._running:
                 return
             self._running = False
 
-        # 停止所有 source
         for source in self._sources:
             try:
                 source.stop()
             except Exception:
                 logger.exception("Error stopping source: %s", source.name)
-
-        # 等派发线程退出 (最多 5 秒)
-        if self._dispatcher_thread and self._dispatcher_thread.is_alive():
-            self._dispatcher_thread.join(timeout=5.0)
 
         logger.info("Runtime stopped")
 
@@ -223,58 +207,89 @@ class EventSourceRuntime:
         return self._running
 
     # ------------------------------------------------------------------
-    # 内部: emit + dispatch
+    # v5 新 API: 统一 input queue
     # ------------------------------------------------------------------
 
-    def _emit(self, event: Event) -> None:
-        """Source 调用的回调: 把 Event 塞进 queue."""
-        self._queue.put(event)
-
-    def get_event(self, timeout: float = 0.5) -> Optional[Event]:
-        """从 queue 拿 Event (外部消费者用, auto_dispatch=False 模式).
+    def add_user_input(self, text: str, source_tag: str = "user") -> None:
+        """外部推 user input 到统一 input_queue.
 
         Args:
-            timeout: 阻塞超时 (秒). None 表示永久阻塞 (不建议, 没法优雅退出).
+            text: user 输入文本 (已经 strip 过)
+            source_tag: 来源标识 (debug 用), 默认 'user'.
+                常见: 'stdin' (CLI stdin reader)
+
+        推送格式::
+
+            {
+                'origin': source_tag,        # e.g. 'stdin'
+                'content': text,             # 实际文本
+                'timestamp': ISO-8601,       # 时间戳
+            }
+        """
+        item = {
+            "origin": source_tag,
+            "content": text,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        self.user_input_history.append(item)
+        logger.info("[input] +user (origin=%s): %s", source_tag, text[:80])
+        self.input_queue.put(item)
+
+    def add_event(self, event: Event) -> None:
+        """Source 触发 event, 路由到绑定的 handler.
+
+        v5 流程:
+        1. 记录 event 到 event_history (调试)
+        2. 查 bindings[event.source] -> [handler, ...]
+        3. 同步调每个 handler.handle(event, runtime) (在 source 线程里)
+        4. handler 内部把 event 包装成 user input 推 runtime.input_queue
+
+        Args:
+            event: Event 实例 (type/source/payload)
+
+        注意: 这里不直接推 input_queue! 因为 handler 可能要 wrap / filter /
+        dedupe event. handler 拿到 runtime 引用, 决定是否推 / 怎么推.
+        """
+        logger.info(
+            "[event] %s.%s: payload=%s",
+            event.source,
+            event.type,
+            event.payload,
+        )
+        self.event_history.append(event)
+
+        # 路由到 handler (新签名 handle(event, runtime))
+        handlers = list(self._bindings.get(event.source, []))
+        if not handlers:
+            logger.warning(
+                "[event] no handler bound for source=%s, event dropped",
+                event.source,
+            )
+            return
+        for handler in handlers:
+            try:
+                handler.handle(event, self)
+            except Exception:
+                logger.exception(
+                    "Handler %s failed to handle event %s",
+                    handler.name,
+                    event,
+                )
+
+    def get_input(self, timeout: float = 0.5) -> Optional[Dict[str, Any]]:
+        """cli loop 阻塞等 input (user 或 event wrap 来的).
+
+        Args:
+            timeout: 阻塞超时 (秒)
 
         Returns:
-            Event 或 None (timeout 时).
+            dict item {'origin': ..., 'content': ..., 'timestamp': ...}
+            或 None (timeout 时)
+
+        注意: 拿到 item 后, 通过 item['origin'] 区分来源 (debug 用), 但
+        agent 处理 content 时不区分 — 走同一条 agent.step() 路径.
         """
         try:
-            return self._queue.get(timeout=timeout)
+            return self.input_queue.get(timeout=timeout)
         except queue.Empty:
             return None
-
-    def _dispatch_loop(self) -> None:
-        """派发循环 (跑在 daemon 线程). 从 queue 拿 Event 派发给 binding 的 handler."""
-        logger.info("Dispatcher loop started")
-        while self._running or not self._queue.empty():
-            try:
-                event = self._queue.get(timeout=0.5)
-            except queue.Empty:
-                # 检查是否所有 source 都自然结束 -> 自动停
-                if (
-                    self._auto_stop_when_all_sources_finish
-                    and self._sources
-                    and all(self._is_source_done(s) for s in self._sources)
-                ):
-                    logger.info("所有 source 都自然结束, runtime auto-stopping")
-                    self._running = False
-                    break
-                continue
-            with self._lock:
-                handlers = list(self._bindings.get(event.source, []))
-            for handler in handlers:
-                try:
-                    handler.handle(event)
-                except Exception:
-                    logger.exception(
-                        "Handler %s failed to handle %s", handler.name, event
-                    )
-        logger.info("Dispatcher loop exited")
-
-    def _is_source_done(self, source: SourceLike) -> bool:
-        """判断 source 是否已经结束 (线程不在 alive 状态)."""
-        thread = self._source_threads.get(source.name)
-        if thread is None:
-            return False
-        return not thread.is_alive()
