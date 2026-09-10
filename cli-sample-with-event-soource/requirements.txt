@@ -1,0 +1,10 @@
+# cli-sample-with-event-soource: 无外部依赖
+#
+# 全部用 Python 3.11+ 标准库:
+# - threading (TimerEventSource 后台线程)
+# - queue   (Runtime 事件队列)
+# - dataclasses (Event)
+# - logging (统一日志)
+# - signal  (Ctrl+C 优雅退出)
+#
+# Python >= 3.11
