@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
-"""CLI Sample with EventSource - 教学示例.
+"""CLI Sample with EventSource + Agent - 教学示例 (Task #3468).
 
 跟 cli-sample/cli_sample.py 配套:
 - cli-sample 演示 "Agent + Tools" (LLM 调用本地工具)
-- cli-sample-with-event-soource 演示 "EventSource + Handler" (定时触发 -> 业务处理)
+- cli-sample-with-event-soource 演示 "EventSource + Agent" (定时触发 -> agent 处理)
 
-两者互补不冲突:
-    cli-sample/
-        src/
-            main.py            # REPL 入口
-            tools/             # Agent 工具 (read/write/edit/bash/glob/grep)
-            ...
-    cli-sample-with-event-soource/
-        src/
-            main.py            # CLI 入口 (本文件)
-            event_source/      # 事件源 (跟 tools 同级)
-                runtime.py     # EventSourceRuntime
-                timer_source.py
-            handlers/          # 事件处理器 (跟 tools 同级)
-                cli_handler.py
+v2 (Task #3468) 升级:
+- 不再只打印日志, 而是: Event -> 包装成 user query -> 调 mini agent loop -> 用 tools 处理
+- 类似 Tong-Agent cli.act(query): user query -> workflow.stream(query) -> 输出
+- 这里: TimerEventSource emit Event -> AgentHandler.handle -> 4 个真实 tools 跑通
 
 工作流:
     1. 构造 EventSourceRuntime
     2. 注册 TimerEventSource (每 N 秒触发, max_count=M 后自动停)
-    3. 注册 CliEventHandler (控制台打印 + 业务占位)
+    3. 注册 AgentHandler (v2 新, 把 event 当 user query 处理)
     4. bind source -> handler
     5. runtime.start()  -> 后台线程开始派发
     6. 主线程 sleep, 让定时器有空间触发
@@ -38,6 +28,8 @@
 环境变量:
     EVENT_INTERVAL_SECONDS: 定时间隔 (默认 30)
     EVENT_MAX_COUNT: 最大触发次数 (默认 5)
+    EVENT_LOG_FILE: agent handler 写入的日志文件 (默认 /tmp/es_agent_log.txt)
+    EVENT_HANDLER: 'agent' (默认 v2) 或 'cli' (v1 旧版, 只打印)
 """
 from __future__ import annotations
 
@@ -54,7 +46,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from event_source import EventSourceRuntime, TimerEventSource  # noqa: E402
-from handlers import CliEventHandler  # noqa: E402
+from handlers import AgentHandler, CliEventHandler  # noqa: E402
 
 
 # ============================================================================
@@ -73,6 +65,8 @@ logger = logging.getLogger("cli-sample-with-event-soource")
 # ============================================================================
 INTERVAL_SECONDS = float(os.getenv("EVENT_INTERVAL_SECONDS", "30"))
 MAX_COUNT = int(os.getenv("EVENT_MAX_COUNT", "5"))
+LOG_FILE = os.getenv("EVENT_LOG_FILE", "/tmp/es_agent_log.txt")
+HANDLER_KIND = os.getenv("EVENT_HANDLER", "agent").lower()  # 'agent' (v2) or 'cli' (v1)
 
 
 def build_runtime() -> EventSourceRuntime:
@@ -91,12 +85,21 @@ def build_runtime() -> EventSourceRuntime:
         },
     )
 
-    # CLI handler: 收到事件打印 + 业务占位
-    cli_handler = CliEventHandler(name="cli_console")
+    # Handler 选择: v2 默认 AgentHandler, v1 CliEventHandler 仅作回退
+    if HANDLER_KIND == "agent":
+        handler = AgentHandler(
+            name="sample_agent",
+            log_file=LOG_FILE,
+            max_tool_calls=3,
+        )
+        logger.info("使用 v2 AgentHandler (event -> user query -> mini agent loop)")
+    else:
+        handler = CliEventHandler(name="cli_console")
+        logger.info("使用 v1 CliEventHandler (仅打印, 不走 agent)")
 
     runtime.add_source(timer_es)
-    runtime.add_handler(cli_handler)
-    runtime.bind(timer_es, cli_handler)
+    runtime.add_handler(handler)
+    runtime.bind(timer_es, handler)
 
     return runtime
 
@@ -116,9 +119,11 @@ def install_signal_handlers(runtime: EventSourceRuntime) -> None:
 
 def main() -> int:
     logger.info("=" * 60)
-    logger.info("CLI Sample with EventSource 启动")
+    logger.info("CLI Sample with EventSource + Agent 启动 (Task #3468)")
     logger.info("  interval = %.1f 秒", INTERVAL_SECONDS)
     logger.info("  max_count = %d", MAX_COUNT)
+    logger.info("  handler = %s", HANDLER_KIND)
+    logger.info("  log_file = %s", LOG_FILE)
     logger.info("  按 Ctrl+C 提前退出")
     logger.info("=" * 60)
 
@@ -137,7 +142,8 @@ def main() -> int:
         runtime.stop()
 
     logger.info("=" * 60)
-    logger.info("CLI Sample with EventSource 退出")
+    logger.info("CLI Sample with EventSource + Agent 退出")
+    logger.info("  日志查看: cat %s", LOG_FILE)
     logger.info("=" * 60)
     return 0
 

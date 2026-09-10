@@ -1,220 +1,161 @@
-# cli-sample-with-event-soource
+# CLI Sample with EventSource + Agent
 
-一个**最小可运行**的 Tong-Agent EventSource 教学示例.
+最小可运行的 **Tong-Agent EventSource + Agent 集成** 教学示例 (Task #3468 v2).
 
-跟 `cli-sample/` 配套:
-- `cli-sample/` 演示 **Agent + Tools** (LLM 调本地工具)
-- `cli-sample-with-event-soource/` 演示 **EventSource + Handler** (定时事件 -> 业务处理)
-
-两者**互补不冲突**: tools/ 是 Agent 工具, event_source/ 是事件源, 都是 Agent 的"输入侧"组件.
+跟 `cli-sample/` 互补:
+- `cli-sample/`: **Agent + Tools** (LLM 调用本地工具)
+- `cli-sample-with-event-soource/`: **EventSource + Agent** (定时触发 → agent 处理 → 工具调用)
 
 ---
 
-## 1. 它解决什么问题?
+## 🎯 目标
 
-Tong-Agent CLI 在跑 REPL 时, 用户输入是 **拉模式 (pull)**: 用户问一句, Agent 答一句.
-但很多场景是 **推模式 (push)**:
-- "每隔 30 分钟提醒我检查一下邮箱"
-- "收到 GitHub webhook 时自动 review PR"
-- "飞书群有新消息时主动响应"
-- "cron 每天早上 9 点给我一个简报"
+按用户飞书反馈 (Task #3468): 之前 ES sample 只"打印日志"不够, 需要:
 
-这类场景需要 **EventSource (事件源)**:
-- 不依赖用户输入
-- 由外部 (timer / webhook / IM) 主动产生 **Event**
-- Event 通过 **Runtime** 派发给 **Handler**
-- Handler 决定怎么响应 (调 LLM / 写文件 / 发通知)
-
-本示例实现最小版: **TimerEventSource** (每 N 秒触发) + **CliEventHandler** (打印日志).
+1. ✅ ES 触发后, 把 event 封装成 **user input**
+2. ✅ 走 Tong-Agent 的 agent 处理流程 (类似 `cli.act` 把 query 喂给 workflow.stream)
+3. ✅ agent 用各种 tool 处理 event (bash / read_file / write_file / list_files)
+4. ✅ 集成之前 cli-sample 的逻辑 (4 个 tool 跟 cli-sample/tools/ 同名同功能)
 
 ---
 
-## 2. 架构
+## 流程 (v2 AgentHandler)
 
 ```
-                ┌──────────────────────────────────────────┐
-                │          EventSourceRuntime              │
-                │                                          │
- TimerEventSource                │ queue                  │
-  - name: sample_timer           │                       │
-  - interval: 30s                 ▼                       │
-  - max_count: 5         ┌──────────────────┐             │
-        │                │ Event dataclass  │             │
-        │ start(emit)    │  type=           │             │
-        └───────────────▶│  source=         │             │
-                         │  payload={...}   │             │
-                         │  timestamp=      │             │
-                         └────────┬─────────┘             │
-                                  │ dispatch_loop         │
-                                  ▼                       │
-                         ┌──────────────────┐             │
-                         │  CliEventHandler │             │
-                         │   handle(event)  │             │
-                         │   ├─ 打印日志    │             │
-                         │   └─ 业务占位    │             │
-                         └──────────────────┘             │
-                                                          │
- Lifecycle:  start() ──▶ [running] ──▶ stop()             │
-──────────────────────────────────────────────────────────
-```
-
-关键抽象 (在 `event_source/runtime.py`):
-
-```python
-@dataclass
-class Event:
-    type: str       # 'timer.tick', 'user.message', 'webhook.github' ...
-    source: str     # 来源 source 名
-    payload: dict   # 自由 dict
-    timestamp: str  # ISO-8601
+TimerEventSource (每 N 秒触发)
+   ↓ emit(Event)
+EventSourceRuntime.queue
+   ↓ dispatch
+AgentHandler.handle(event)
+   ├─ _event_to_query(event)         # 把 Event 包装成 user query
+   │                                  # 类似 Tong-Agent lark_cli 提取 message 字段
+   ↓ user_query
+_mini_agent_loop(user_query)         # 类似 Tong-Agent act(query) → workflow.stream(query)
+   ├─ mock LLM 决策                   # 教学版: 用确定性 plan 替代 LLM
+   ├─ bash(args)         # Tool #1: subprocess.run + shlex.split
+   ├─ write_file(args)   # Tool #2: 追加写入 /tmp/es_agent_log.txt
+   └─ list_files(args)   # Tool #3: glob 列出 *.py 文件
+   ↓ tool 结果
+写入历史 + 控制台日志
 ```
 
 ---
 
-## 3. 文件结构
+## 文件结构
 
 ```
 cli-sample-with-event-soource/
 ├── README.md                          # 本文件
-├── requirements.txt                   # 无外部依赖
-└── src/
-    ├── main.py                        # CLI 入口 (含信号处理)
-    ├── event_source/                  # 事件源 (跟 tools 同级)
-    │   ├── __init__.py
-    │   ├── runtime.py                 # EventSourceRuntime + Event dataclass
-    │   └── timer_source.py            # TimerEventSource
-    └── handlers/                      # 处理器 (跟 tools 同级)
-        ├── __init__.py
-        └── cli_handler.py             # CliEventHandler
+├── test_run.py                        # 集成测试 (v2 AgentHandler)
+├── src/
+│   ├── main.py                        # CLI 入口 (默认 v2 AgentHandler)
+│   ├── event_source/
+│   │   ├── __init__.py
+│   │   ├── runtime.py                 # EventSourceRuntime (Source → queue → Handler)
+│   │   └── timer_source.py            # TimerEventSource (固定间隔 emit)
+│   └── handlers/
+│       ├── __init__.py
+│       ├── cli_handler.py             # v1 (保留): 只打印
+│       └── agent_handler.py           # v2 (新): event → user query → mini agent + tools
+└── pyproject.toml                     # (如果有, 跟 cli-sample 同)
 ```
-
-参考 Tong-Agent 实现 (`Tong-Agent/cli/src/tongagents_cli/event_source/`):
-- `runtime.py` ← `tongagents_cli/event_source/runtime.py` (Handler 注册表, 简化版)
-- `timer_source.py` ← `tongagents_cli/event_source/handlers/timer.py` (TimerHandler, 简化版)
-- `cli_handler.py` ← `tongagents_cli/event_source/handlers/lark_cli.py` (Handler 基类)
-
-**简化点** (本示例**不**包含 Tong-Agent 的):
-- ❌ `storage.py` - 持久化配置 (本示例无持久化, 进程内)
-- ❌ `event_store.py` - 事件流持久化
-- ❌ `daemon.py` - 后台进程 + PID 文件
-- ❌ `commands.py` - Click CLI 命令组
-- ❌ SDK dispatcher 耦合 - 不触发 LLM, 只派发给 handler
-- ❌ cron 表达式 (只支持 interval, 教学够用)
 
 ---
 
-## 4. 运行
+## 运行
 
-### 4.1 默认 (每 30 秒触发, 触发 5 次后自动停)
+### 默认 (v2 AgentHandler)
 
 ```bash
 cd cli-sample-with-event-soource/src
 python3 main.py
 ```
 
-预期输出 (时间戳会变):
+预期:
+- 每 `EVENT_INTERVAL_SECONDS` 秒 (默认 30) 触发一次 timer tick
+- AgentHandler 收到 Event → 包装 user query → 调 mini agent loop
+- 每次触发调 3 个 tool: `bash` (date -u) + `write_file` (追加日志) + `list_files`
+- 日志写入 `/tmp/es_agent_log.txt` (可自定义 `EVENT_LOG_FILE`)
+- `EVENT_MAX_COUNT` 次后自动停 (默认 5)
 
-```
-[10:40:00] INFO  cli-sample-with-event-soource: ============================================================
-[10:40:00] INFO  cli-sample-with-event-soource: CLI Sample with EventSource 启动
-[10:40:00] INFO  cli-sample-with-event-soource:   interval = 30.0 秒
-[10:40:00] INFO  cli-sample-with-event-soource:   max_count = 5
-[10:40:00] INFO  cli-sample-with-event-soource:   按 Ctrl+C 提前退出
-[10:40:00] INFO  cli-sample-with-event-soource: ============================================================
-[10:40:00] INFO  event_source.runtime: Registered source: sample_timer (type=TimerEventSource)
-[10:40:00] INFO  event_source.runtime: Registered handler: cli_console (type=CliEventHandler)
-[10:40:00] INFO  event_source.runtime: Bound sample_timer -> cli_console
-[10:40:00] INFO  event_source.runtime: Dispatcher loop started
-[10:40:00] INFO  event_source.timer: [sample_timer] started, interval=30.0s, max_count=5, event_type=timer.tick
-[10:40:30] INFO  handler.cli: [cli_console] 收到事件: Event[timer.tick] from sample_timer @ 2026-09-10T10:40:30 payload={'source': 'cli-sample-with-event-soource', 'note': '每 30 秒触发一次', 'tick': 1}
-[10:40:30] INFO  handler.cli: [cli_console] [业务] 处理 timer.tick #1 (每 30 秒触发一次)
-... (每 30 秒一次, 共 5 次) ...
-[10:42:30] INFO  event_source.timer: [sample_timer] reached max_count=5, auto-stopping
-[10:42:30] INFO  event_source.runtime: 所有 source 都自然结束, runtime auto-stopping
-[10:42:30] INFO  cli-sample-with-event-soource: ============================================================
-[10:42:30] INFO  cli-sample-with-event-soource: CLI Sample with EventSource 退出
-[10:42:30] INFO  cli-sample-with-event-soource: ============================================================
-```
-
-注意: 触发到 `max_count` 后, `TimerEventSource` 自动停. `EventSourceRuntime` 检测到所有 source
-都自然结束, 也会自动停 (auto_stop_when_all_sources_finish=True). 程序自然退出.
-
-### 4.2 自定义间隔 (测试用: 每 2 秒, 触发 3 次)
+### 快速测试
 
 ```bash
-cd cli-sample-with-event-soource/src
-EVENT_INTERVAL_SECONDS=2 EVENT_MAX_COUNT=3 python3 main.py
+EVENT_INTERVAL_SECONDS=1 EVENT_MAX_COUNT=2 python3 main.py
+# 2 秒内 2 次 tick, 每个 tick 调 3 个 tool, 日志文件有 2 条 [event]
 ```
 
-约 6-7 秒后程序自动退出.
-
-### 4.3 提前退出
-
-按 `Ctrl+C` (SIGINT), runtime 优雅停掉所有 source.
-
----
-
-## 5. 测试
-
-`/tmp/test_run.py` 是 8 秒集成测试: 验证定时器真的触发, handler 真的收到:
+### 切换回 v1 (只打印)
 
 ```bash
-cd cli-sample-with-event-soource/src
-python3 /tmp/test_run.py
+EVENT_HANDLER=cli EVENT_INTERVAL_SECONDS=1 EVENT_MAX_COUNT=2 python3 main.py
 ```
 
-期望看到 3 个 `tick #1`, `tick #2`, `tick #3`.
+### 集成测试
+
+```bash
+cd cli-sample-with-event-soource
+python3 test_run.py
+```
+
+预期 5 项断言全部通过:
+1. 日志文件含 3 条 `[event]` 记录
+2. `AgentHandler.history` 有 3 条 user + 9 条 tool (3 events × 3 tools)
+3. 每个 event 都用了 bash + write_file + list_files
+4. 耗时 5-12 秒
+5. 所有非主线程退出
 
 ---
 
-## 6. 扩展方向
+## 环境变量
 
-如果想接到真实业务:
-
-### 6.1 触发 LLM 处理 (回到 Tong-Agent SDK)
-
-修改 `cli_handler.py::_handle_timer_tick`:
-
-```python
-def _handle_timer_tick(self, event):
-    prompt = f"[定时触发 #{event.payload['tick']}] 请检查邮箱, 给我简报."
-    actions = self._agent.step(LLMInputEvent(input=[UserPromptMessage(prompt)]))
-    # 处理 actions ...
-```
-
-### 6.2 加更多事件源
-
-复制 `timer_source.py` 模式, 实现:
-
-- `webhook_source.py` - 监听 HTTP POST
-- `fs_watch_source.py` - watchdog 监听文件变化
-- `im_source.py` - 飞书/钉钉消息流
-
-### 6.3 多 handler 扇出
-
-一个 source 绑多个 handler (例如: timer 同时触发 CLI 打印 + 写日志文件 + 调 Agent):
-
-```python
-runtime.bind(timer_es, cli_handler)
-runtime.bind(timer_es, file_handler)
-runtime.bind(timer_es, agent_handler)
-```
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `EVENT_INTERVAL_SECONDS` | `30` | 定时间隔 (秒) |
+| `EVENT_MAX_COUNT` | `5` | 最大触发次数 (None = 无限) |
+| `EVENT_LOG_FILE` | `/tmp/es_agent_log.txt` | AgentHandler 写入的日志 |
+| `EVENT_HANDLER` | `agent` | `agent` (v2) 或 `cli` (v1) |
 
 ---
 
-## 7. 跟 Tong-Agent 的对应关系
+## 与 Tong-Agent 对应
 
-| 本示例 | Tong-Agent `tongagents_cli.event_source` |
+| 本示例 | Tong-Agent |
 |---|---|
-| `EventSourceRuntime` | `runtime.EventSourceRuntime` (单例) |
-| `Event` dataclass | `event_store.EventSourceEvent` |
-| `TimerEventSource` | `handlers.TimerHandler` (BaseHandler 子类) |
-| `CliEventHandler` | `handlers.LarkCliHandler` |
-| `add_source` / `add_handler` / `bind` | `storage + runtime.start(record)` |
-| ❌ 无 storage | `storage.EventSourceStorage` (JSON 持久化) |
-| ❌ 无 daemon | `daemon.DaemonManager` (double-fork 后台进程) |
-| ❌ 无 SDK dispatcher | `daemon_entry._dispatch_to_agent` |
-| ❌ 无 CLI commands | `commands.event_source_group` (Click) |
+| `TimerEventSource` | `tongagents_cli.event_source.handlers.TimerHandler` |
+| `AgentHandler.handle(event)` | `cli.act(query)` 入口 |
+| `_event_to_query(event)` | (lark_cli 提取 message 字段) |
+| `_mini_agent_loop(query)` | `workflow.stream(query)` |
+| `bash` / `read_file` / `write_file` / `list_files` | `tongagents_cli.default_agent.tools.{Bash,ReadFile,WriteFile,Glob}Tool` |
+| mock LLM 决策 | Tong-Agent: 真实 LLM 输出 tool_calls |
 
-教学示例保留核心抽象 (Source / Event / Runtime / Handler), 砍掉所有持久化 / 后台 / CLI 框架,
-让初学者能 5 分钟看完 200 行代码搞懂 eventsource 是什么.
+---
+
+## 简化点 (相对 Tong-Agent)
+
+| 维度 | 本示例 | Tong-Agent |
+|---|---|---|
+| LLM | 无 (mock 决策) | 真实 (OpenAI-compatible) |
+| 持久化 | 无 (进程内 queue) | storage + daemon |
+| Tools | 4 个本地简化版 | 完整 SDK 工具集 |
+| Event 派发 | 单进程 dispatcher | SDK EventDispatcher + 持久化 |
+| Session | 无 | SessionManager (多轮对话) |
+
+教学示例保留核心抽象 (Source / Runtime / Handler + Tools), 省略生产级特性.
+
+---
+
+## 设计动机
+
+- **为什么 mock LLM**: 教学示例不绑 OPENAI_API_KEY (LLM 需要). 但工具必须真实 (否则演示 agent + tool 集成没意义).
+- **为什么 4 个 tools**: 跟 `cli-sample/tools/` 同名, 让用户能对比"纯工具" vs "工具被 agent 调"两种使用方式.
+- **为什么保留 v1 CliEventHandler**: 教学分阶段: v1 只打印, v2 跑 agent 流程. 通过 `EVENT_HANDLER=cli/agent` 切换.
+
+---
+
+## 任务来源
+
+- Task #3467 (v1): 加 cli-sample-with-event-soource folder, 演示 EventSource + Handler
+- **Task #3468 (v2, 本次)**: ES 触发后走 agent + tool 流程, 集成 cli sample 逻辑
+
+用户原话: "在 Tong-Agent 的 cli 里面, 是将 event 封装下当成 user input 输入的, 然后就走 agent 处理用户 query 的 llm 流程的, 我希望这个 es sample 也是这样, 这样才能集成之前 cli sample 的逻辑哈, 效果就是定时事件发出之后, agent 利用各种 tool 来处理这个 event 哈"
