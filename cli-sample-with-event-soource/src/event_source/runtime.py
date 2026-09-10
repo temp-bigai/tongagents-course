@@ -62,21 +62,46 @@ SourceLike = Any  # duck-typed
 class EventSourceRuntime:
     """进程内 EventSource Runtime: 持有 source/handler 注册表 + 派发循环.
 
-    Usage::
+    Usage (模式 1, 默认 — handler dispatch)::
 
         runtime = EventSourceRuntime()
         runtime.add_source(timer_es)
         runtime.add_handler(cli_handler)
         runtime.bind(timer_es, cli_handler)
-        runtime.start()              # 阻塞直到 runtime.stop()
+        runtime.start()              # 内部 dispatcher 线程会调 cli_handler.handle(event)
         # 或者: runtime.start(); do_other_stuff(); runtime.stop()
+
+    Usage (模式 2, 外部消费 — external consumer)::
+
+        runtime = EventSourceRuntime(auto_dispatch=False)
+        runtime.add_source(timer_es)
+        runtime.start()
+        # 外部代码自己从 runtime._queue (或 runtime.get_event()) 拿 Event
+        # 适用于: event 走 user input loop / event 转其他协议 / 多消费者场景
 
     Threading:
     - 派发循环跑在 daemon 线程, 从 queue 拿 Event 分发给绑定 handler
+      (仅在 auto_dispatch=True 时)
     - Source 的 emit 是 thread-safe (queue.Queue)
     """
 
-    def __init__(self, auto_stop_when_all_sources_finish: bool = True) -> None:
+    def __init__(
+        self,
+        auto_stop_when_all_sources_finish: bool = True,
+        auto_dispatch: bool = True,
+    ) -> None:
+        """
+        Args:
+            auto_stop_when_all_sources_finish:
+                所有 source 都自然结束时是否自动 stop runtime. 默认 True.
+            auto_dispatch:
+                是否启动内部 dispatcher 线程 (从 _queue 拿 Event -> handler.handle).
+                - True (默认): 经典模式, Source -> Runtime -> Handler
+                - False: 外部消费模式, Source -> Runtime._queue (外部自己 get)
+                  适用于 event 转 user input / 跨进程传递 / 自定义 dispatch 逻辑
+                  等场景. v4 cli-sample-with-event-soource 用这个模式:
+                  event 不直接给 handler, 而是包装成 user input 注入 REPL.
+        """
         self._sources: List[SourceLike] = []
         self._handlers: List[Any] = []
         # source_name -> [handler, ...]
@@ -88,6 +113,8 @@ class EventSourceRuntime:
         # 当所有 source 都自然结束时 (比如 TimerEventSource 达到 max_count 自动退),
         # 是否自动停掉 runtime. 默认 True, 让 main.py 不需要外部打断.
         self._auto_stop_when_all_sources_finish = auto_stop_when_all_sources_finish
+        # 内部 dispatcher 线程是否从 _queue 消费. False 时外部代码自己 get.
+        self._auto_dispatch = auto_dispatch
         # source.name -> 线程对象 (用来判断 source 是否还活着)
         self._source_threads: Dict[str, Optional[threading.Thread]] = {}
 
@@ -125,20 +152,30 @@ class EventSourceRuntime:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """启动派发线程 + 所有 source. 启动后 Runtime 进入 running 状态."""
+        """启动派发线程 + 所有 source. 启动后 Runtime 进入 running 状态.
+
+        auto_dispatch=False 时不启动内部 dispatcher 线程, 留给外部消费.
+        """
         with self._lock:
             if self._running:
                 logger.warning("Runtime already running")
                 return
             self._running = True
 
-        # 启动派发线程
-        self._dispatcher_thread = threading.Thread(
-            target=self._dispatch_loop,
-            name="event-source-dispatcher",
-            daemon=True,
-        )
-        self._dispatcher_thread.start()
+        # 启动派发线程 (仅在 auto_dispatch=True 时)
+        if self._auto_dispatch:
+            self._dispatcher_thread = threading.Thread(
+                target=self._dispatch_loop,
+                name="event-source-dispatcher",
+                daemon=True,
+            )
+            self._dispatcher_thread.start()
+            logger.info("内部 dispatcher 线程已启动")
+        else:
+            logger.info(
+                "auto_dispatch=False, 跳过内部 dispatcher; "
+                "外部代码请用 get_event() 或 _queue.get() 消费 Event"
+            )
 
         # 启动所有 source (把 emit 回调传过去, 并跟踪线程句柄)
         for source in self._sources:
@@ -192,6 +229,20 @@ class EventSourceRuntime:
     def _emit(self, event: Event) -> None:
         """Source 调用的回调: 把 Event 塞进 queue."""
         self._queue.put(event)
+
+    def get_event(self, timeout: float = 0.5) -> Optional[Event]:
+        """从 queue 拿 Event (外部消费者用, auto_dispatch=False 模式).
+
+        Args:
+            timeout: 阻塞超时 (秒). None 表示永久阻塞 (不建议, 没法优雅退出).
+
+        Returns:
+            Event 或 None (timeout 时).
+        """
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     def _dispatch_loop(self) -> None:
         """派发循环 (跑在 daemon 线程). 从 queue 拿 Event 派发给 binding 的 handler."""

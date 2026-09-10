@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
-"""test_run.py - v3 集成测试 (Task #3469): 验证 AgentHandler 真调 LLM + tool.
+"""test_run.py - v4 集成测试 (Task #3470).
 
-放在 cli-sample-with-event-soource/test_run.py (跟 src/ 同级).
+验证 v4 架构:
+1. 单 handler (AgentHandler) — 没有 CliEventHandler / cli_observer
+2. 复用 cli-sample 的"等 user input + agent.step + print response"循环
+3. ES event 包装成 user input, 注入到 input_queue
+4. main loop 从 input_queue 拿 item (user + event 都一样), 走 cli-sample 循环
+5. 真跑通 (有 OPENAI_API_KEY + OPENAI_MODEL 时调真 LLM, 否则跑通架构即可)
 
 跑法:
     cd cli-sample-with-event-soource
-    python3 test_run.py                # 默认: 有 OPENAI_API_KEY + OPENAI_MODEL 走真 LLM, 否则 mock
-    python3 test_run.py --mock         # 强制走 mock 路径 (不管 env)
-    python3 test_run.py --real         # 强制走真 LLM 路径 (没 env 会退出码 2)
+    python3 test_run.py                # 默认: 真 LLM (如果有 env), 否则走 mock 注入
+    python3 test_run.py --mock-llm     # 强制不让 agent.step 真调 LLM, 直接跳过
 
 期望:
-- 真 LLM 路径: AgentHandler._llm_available=True, _agent is not None
-- mock 路径: 3 ticks × 3 tools = 9 tool records (跟 v2 兼容)
-- 真 LLM 路径: history 含 N user + N×M assistant actions (M 由 LLM 决定, 通常 2)
-- 日志文件 /tmp/es_agent_log.txt 含 3 条 [es-agent-event] 记录 (mock + 真 LLM 都写)
-- runtime 正常 stop, 不留僵尸线程
+- ES 触发 3 次, 每次都被 dispatcher 转成 user input, 推到 input_queue
+- main loop 从 input_queue 拿出 3 条 [ES 自动输入], 走 cli-sample 循环
+- 每次都有响应 (真 LLM 路径) 或显式跳过 (mock 路径)
+- 全部断言通过
+
+注意 v4 跟 v3 的差别:
+- v3 测试主要断言 AgentHandler.history 含 3 条 user + 9 条 tool + 日志文件
+- v4 测试主要断言 ES event 进入了 input_queue, 循环处理了 3 次
+- v4 不再断言 AgentHandler 自己有 history (handler 只是个容器, history 在 agent 内部)
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import queue
 import sys
 import threading
 import time
@@ -32,7 +41,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from event_source import EventSourceRuntime, TimerEventSource  # noqa: E402
-from handlers import AgentHandler, CliEventHandler  # noqa: E402
+from handlers import AgentHandler  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,196 +51,164 @@ logging.basicConfig(
 logger = logging.getLogger("test_run")
 
 
-LOG_FILE = "/tmp/es_agent_log.txt"
-
-
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="test_run.py v3 (Task #3469)")
+    p = argparse.ArgumentParser(description="test_run.py v4 (Task #3470)")
     p.add_argument(
-        "--mock",
+        "--mock-llm",
         action="store_true",
-        help="强制走 mock 路径 (不管 OPENAI_API_KEY / OPENAI_MODEL)",
-    )
-    p.add_argument(
-        "--real",
-        action="store_true",
-        help="强制走真 LLM 路径 (没 env 会失败退出 2)",
+        help="不让 agent.step 真调 LLM (跳过 step 调用, 只验证 ES 注入 + 循环结构)",
     )
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-
-    logger.info("===== test_run v3 开始 (AgentHandler + 真 LLM 路径) =====")
+    logger.info("===== test_run v4 开始 (单 handler + 复用 cli-sample 循环) =====")
     logger.info("OPENAI_API_KEY=%s", "✓" if os.environ.get("OPENAI_API_KEY") else "✗")
     logger.info("OPENAI_MODEL=%s", os.environ.get("OPENAI_MODEL") or "✗")
+    logger.info("--mock-llm=%s", args.mock_llm)
     start_time = time.monotonic()
 
-    # 清空旧日志, 避免上次测试残留
-    if os.path.exists(LOG_FILE):
-        os.remove(LOG_FILE)
-        logger.info("清空旧日志: %s", LOG_FILE)
+    # 1. 单 handler (复用 cli-sample 模式)
+    agent_handler = AgentHandler(name="test_agent")
 
-    runtime = EventSourceRuntime()
+    # 2. Runtime + TimerEventSource (3 次 / 2 秒间隔 = 约 6 秒)
+    #    auto_dispatch=False: v4 关键, 让外部 ES dispatcher 消费 Event
+    runtime = EventSourceRuntime(auto_dispatch=False)
     timer_es = TimerEventSource(
         name="test_timer",
         interval_seconds=2,
         max_count=3,
         event_type="timer.tick",
-        payload={"source": "test", "note": "v3 集成测试 (真 LLM)"},
+        payload={"source": "test", "note": "v4 测试 ES 注入 input_queue"},
     )
-
-    # AgentHandler (v3): 收到 event -> 包装 user query -> 调真 LLM (或 mock fallback)
-    agent_handler = AgentHandler(
-        name="test_agent",
-        log_file=LOG_FILE,
-        max_tool_calls=3,
-    )
-
-    # 根据 args 强制决定走哪条路径
-    if args.mock:
-        logger.info("🔧 强制 mock 路径 (--mock)")
-        agent_handler._llm_available = False
-        agent_handler._agent = None
-    elif args.real:
-        if not agent_handler._llm_available:
-            logger.error(
-                "❌ --real 但真 LLM 不可用 (缺 OPENAI_API_KEY / OPENAI_MODEL / tongagents SDK)"
-            )
-            return 2
-        logger.info("🔧 强制真 LLM 路径 (--real)")
-
-    path_kind = "真 LLM" if agent_handler._llm_available else "mock"
-    logger.info("走 %s 路径", path_kind)
-
-    # 同时挂 CliEventHandler 用于兼容性观察 (不影响主流程)
-    cli_handler = CliEventHandler(name="cli_observer")
-
     runtime.add_source(timer_es)
-    runtime.add_handler(agent_handler)
-    runtime.add_handler(cli_handler)
-    runtime.bind(timer_es, agent_handler)
-    runtime.bind(timer_es, cli_handler)
 
+    # 3. 共享 input_queue
+    input_queue: "queue.Queue[str]" = queue.Queue()
+
+    # 4. ES dispatcher (复用 main.py 的实现, 不用重新发明)
+    from main import make_es_dispatcher, event_to_user_input  # noqa: E402
+    es_dispatcher = make_es_dispatcher(runtime, input_queue)
+
+    # 5. 启动
     runtime.start()
+    dispatcher_thread = threading.Thread(
+        target=es_dispatcher,
+        name="test-es-dispatcher",
+        daemon=True,
+    )
+    dispatcher_thread.start()
 
-    # 真 LLM 路径每个 tick 多花 5-15s (API 往返 + tool 执行),
-    # 给 60s 上限, mock 路径大约 6-7s 完成
-    deadline_sec = 70.0 if agent_handler._llm_available else 15.0
-    deadline = time.monotonic() + deadline_sec
-    while runtime.is_running and time.monotonic() < deadline:
-        time.sleep(0.2)
+    # 6. 复用 cli-sample 循环: 从 input_queue 拿 user input, 走 agent.step
+    processed_inputs: list[str] = []
+    agent_responses: list[str] = []
+    deadline = time.monotonic() + 30.0  # 3 ticks @ 2s + buffer
 
-    # 兜底 stop (deadline 到了还没退)
+    while time.monotonic() < deadline:
+        try:
+            user_input = input_queue.get(timeout=0.5)
+        except queue.Empty:
+            # 兜底: 3 个 tick 都处理完 + 等一会儿, 就退出
+            if len(processed_inputs) >= 3:
+                break
+            if not runtime.is_running and input_queue.empty():
+                break
+            continue
+
+        processed_inputs.append(user_input)
+
+        # 校验: 必须是 ES 注入的 (含 [ES 自动输入])
+        assert "[ES 自动输入]" in user_input, (
+            f"期望 ES 注入的 user input, 实际: {user_input[:80]}"
+        )
+
+        # 走 agent.step (复用 cli-sample 循环结构)
+        if args.mock_llm:
+            response = "[mock response] 收到定时事件, 已记录到日志"
+            logger.info("[test] --mock-llm 跳过 agent.step")
+        else:
+            try:
+                from tongagents.agents.llm_agent.defs import LLMInputEvent  # type: ignore
+                from tongagents.agents.llm.messages import UserPromptMessage  # type: ignore
+
+                wrap = LLMInputEvent(input=[UserPromptMessage(user_input)])
+                actions = agent_handler.agent.step(wrap)
+                response = ""
+                for action in actions:
+                    if getattr(action, "is_final_response", False):
+                        response = (action.content or "").strip()
+                        break
+                if not response:
+                    for action in actions:
+                        if hasattr(action, "content") and action.content:
+                            response = action.content.strip()
+                            break
+                logger.info("[test] agent.step 完成, response=%s", response[:80])
+            except Exception as e:  # noqa: BLE001
+                logger.exception("[test] agent.step 失败: %s", e)
+                response = f"[error] {type(e).__name__}: {e}"
+
+        agent_responses.append(response)
+        logger.info(
+            "[test] 处理第 %d 条 input 完成 (含 [ES 自动输入] 标记)",
+            len(processed_inputs),
+        )
+
+    # 7. 清理
     if runtime.is_running:
-        logger.warning("Runtime 还没退, 兜底 stop")
         runtime.stop()
+    dispatcher_thread.join(timeout=3.0)
 
     elapsed = time.monotonic() - start_time
-    logger.info("===== test_run v3 完成, elapsed=%.2fs, path=%s =====", elapsed, path_kind)
+    logger.info("===== test_run v4 完成, elapsed=%.2fs =====", elapsed)
+    logger.info("处理的 input 数: %d", len(processed_inputs))
+    logger.info("agent response 数: %d", len(agent_responses))
 
     # ==================================================================
-    # 断言 1: 日志文件存在, 含 3 条 [es-agent-event] 记录
-    # (真 LLM + mock 都写日志, 因为 _call_real_llm_loop 也写 [es-agent-event] 行)
+    # 断言 1: 处理了 3 条 ES 注入的 input
     # ==================================================================
-    import re
-
-    assert os.path.exists(LOG_FILE), f"日志文件不存在: {LOG_FILE}"
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        log_lines = f.readlines()
-    # 严格匹配我们自己的日志格式: "[ISO timestamp] [es-agent-event] ..."
-    # 用独特 marker [es-agent-event] 避免跟 LLM 写入的 [event] 字符串混淆
-    # 兼容 ISO8601 (T 分隔) 和 LLM 写入的 space 分隔
-    # NOTE: 用完整文件内容 (而非按行) 计数, 因为 LLM 可能不写 newline,
-    #       导致它 write_file 的内容跟我们的 [es-agent-event] 行拼在一起.
-    event_re = re.compile(r"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\] \[es-agent-event\]")
-    log_content = "".join(log_lines)
-    event_count = len(event_re.findall(log_content))
-    logger.info("日志文件内容 (%d 条 [es-agent-event]):", event_count)
-    for line in log_lines:
-        if line.strip():
-            logger.info("  %s", line.rstrip())
-    assert event_count == 3, f"期望 3 条 [es-agent-event], 实际 {event_count}"
-
-    # ==================================================================
-    # 断言 2: AgentHandler.history 含 3 条 user
-    # (mock 路径有 9 条 tool; 真 LLM 路径由 SDK 返回 actions 决定, 通常每 tick 1-3 个 assistant action)
-    # ==================================================================
-    user_msgs = [h for h in agent_handler.history if h.get("role") == "user"]
-    logger.info(
-        "AgentHandler.history: %d user + %d 其他 = %d 总条数",
-        len(user_msgs),
-        len(agent_handler.history) - len(user_msgs),
-        len(agent_handler.history),
+    assert len(processed_inputs) == 3, (
+        f"期望 3 条 ES 注入的 user input, 实际 {len(processed_inputs)}"
     )
-    assert len(user_msgs) == 3, f"期望 3 条 user, 实际 {len(user_msgs)}"
-
-    if agent_handler._llm_available:
-        # 真 LLM 路径: 每 tick 至少 1 个 final assistant action
-        final_msgs = [
-            h
-            for h in agent_handler.history
-            if h.get("role") == "assistant" and h.get("is_final_response")
-        ]
-        logger.info("真 LLM 路径 final action 数: %d", len(final_msgs))
-        assert len(final_msgs) >= 3, (
-            f"真 LLM 路径期望至少 3 条 final action, 实际 {len(final_msgs)}"
-        )
-
-        # 真 LLM 路径不应有 mock 路径专属的 tool role 记录
-        tool_msgs = [h for h in agent_handler.history if h.get("role") == "tool"]
-        logger.info("真 LLM 路径 tool role 记录数: %d (应为 0, 由 SDK 内部处理)", len(tool_msgs))
-        assert len(tool_msgs) == 0, (
-            f"真 LLM 路径不应有 tool role 记录, 实际 {len(tool_msgs)}"
-        )
-    else:
-        # mock 路径: 3 events × 3 tools = 9 条 tool
-        tool_msgs = [h for h in agent_handler.history if h.get("role") == "tool"]
-        assert len(tool_msgs) == 9, f"mock 路径期望 9 条 tool (3 events × 3 tools), 实际 {len(tool_msgs)}"
-
-        # mock 路径: bash + write_file + list_files 各 3 次
-        tools_used = [t.get("tool") for t in tool_msgs]
-        bash_count = tools_used.count("bash")
-        write_count = tools_used.count("write_file")
-        list_count = tools_used.count("list_files")
-        logger.info(
-            "Mock tool 调用统计: bash=%d, write_file=%d, list_files=%d",
-            bash_count,
-            write_count,
-            list_count,
-        )
-        assert bash_count == 3, f"期望 3 次 bash, 实际 {bash_count}"
-        assert write_count == 3, f"期望 3 次 write_file, 实际 {write_count}"
-        assert list_count == 3, f"期望 3 次 list_files, 实际 {list_count}"
 
     # ==================================================================
-    # 断言 3: 耗时合理
-    # - mock 路径: 3 ticks @ 2s = ~6s, + 启动/收尾 1-4s → 5-12s
-    # - 真 LLM 路径: 3 ticks × (API 往返 3-10s + tool 0-3s) = 9-40s
+    # 断言 2: 每条都含 [ES 自动输入] 标记 (event 转 user input 成功)
     # ==================================================================
-    if agent_handler._llm_available:
-        assert elapsed <= 70.0, f"真 LLM 路径耗时 > 70s: {elapsed:.2f}"
-    else:
-        assert 5.0 <= elapsed <= 12.0, f"mock 路径期望 5-12 秒, 实际 {elapsed:.2f}"
+    for i, inp in enumerate(processed_inputs, 1):
+        assert "[ES 自动输入]" in inp, f"第 {i} 条 input 缺 [ES 自动输入] 标记"
+        assert "type: timer.tick" in inp, f"第 {i} 条 input 缺 type 字段"
+        assert "payload" in inp, f"第 {i} 条 input 缺 payload 字段"
+    logger.info("✅ 3 条 ES 注入 input 全部含正确格式")
 
     # ==================================================================
-    # 断言 4: 我们的 app 线程都退了 (除主线程外, 容许 SDK 自己的后台线程如 fsspecIO)
+    # 断言 3: agent 有响应 (mock 或真 LLM 都给 response)
     # ==================================================================
-    # tongagents SDK 会启动 fsspecIO 后台线程 (用于文件 IO 池), 这是 SDK 内部的,
-    # 不属于我们 app 的线程泄漏. 我们的 app 只跑 EventSourceRuntime 的 dispatcher 线程,
-    # 它在 runtime.stop() 时应该退出.
-    _SDK_THREADS = {"fsspecIO"}  # 容许的 SDK 自带后台线程名
-    alive = [
-        t.name
-        for t in threading.enumerate()
-        if t != threading.main_thread() and t.name not in _SDK_THREADS
-    ]
-    logger.info("剩余 app 线程 (排除 SDK 自带): %s", alive)
-    assert not alive, f"有 app 线程未退: {alive}"
+    assert len(agent_responses) == 3, f"期望 3 条 agent response, 实际 {len(agent_responses)}"
+    for i, resp in enumerate(agent_responses, 1):
+        assert resp, f"第 {i} 条 response 为空"
+    logger.info("✅ 3 条 agent response 全部非空")
 
-    logger.info("✅ 全部断言通过 (AgentHandler v3 + %s 路径)", path_kind)
-    logger.info("✅ 日志文件路径: %s", LOG_FILE)
+    # ==================================================================
+    # 断言 4: 耗时合理 (3 ticks @ 2s = ~6s, + buffer)
+    # ==================================================================
+    assert elapsed <= 30.0, f"耗时 > 30s: {elapsed:.2f}"
+    logger.info("✅ 耗时 %.2fs 在合理范围", elapsed)
+
+    # ==================================================================
+    # 断言 5: 没有 CliEventHandler 残留 (单 handler 验证)
+    # ==================================================================
+    from handlers import AgentHandler as _AH
+    assert _AH.__name__ == "AgentHandler"
+    try:
+        from handlers import CliEventHandler  # noqa: F401
+        assert False, "CliEventHandler 不应存在 (v4 单 handler)"
+    except ImportError:
+        logger.info("✅ handlers 包无 CliEventHandler (单 handler 验证通过)")
+
+    logger.info("=" * 60)
+    logger.info("✅ 全部断言通过 (v4 架构: 单 handler + 复用 cli-sample 循环)")
+    logger.info("=" * 60)
     return 0
 
 

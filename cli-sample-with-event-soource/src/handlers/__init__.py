@@ -1,14 +1,18 @@
 """CLI Event Handlers package (cli-sample-with-event-soource).
 
-教学版 handler 集合, 跟 Tong-Agent tongagents_cli.event_source.handlers 对齐 (简化版):
-- CliEventHandler: 控制台打印 + 业务占位 (Timer tick 触发时打印)
-- AgentHandler: 把 Event 包装成 user query, 调 mini agent loop + tools (Task #3468)
+v4 设计 (Task #3470):
+- 单 handler: AgentHandler (复用 cli-sample 的 agent, 不实现 mini loop)
+- 移除 CliEventHandler — 不再有 cli_observer (用户反馈 v3 多 handler 太杂)
 
-使用建议:
-- 教学 v1 入门: CliEventHandler (只打印)
-- 教学 v2 进阶: AgentHandler (event -> user query -> agent 处理 + tools)
+ES 事件处理路径 (v4):
+    TimerEventSource -> EventSourceRuntime._queue
+                            ↓ (ES dispatcher thread 轮询)
+                         input_queue (跟 user stdin 合流)
+                            ↓ (复用 cli-sample REPL 循环)
+                         agent.step(user_input)
+                            ↓
+                         print(response)
 """
 from .agent_handler import AgentHandler
-from .cli_handler import CliEventHandler
 
-__all__ = ["AgentHandler", "CliEventHandler"]
+__all__ = ["AgentHandler"]
