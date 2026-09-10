@@ -1,10 +1,21 @@
-# cli-sample-with-event-soource: 无外部依赖
+# cli-sample-with-event-soource 依赖 (Task #3469 v3)
 #
-# 全部用 Python 3.11+ 标准库:
+# 核心: 几乎全部用 Python 3.11+ 标准库
 # - threading (TimerEventSource 后台线程)
 # - queue   (Runtime 事件队列)
 # - dataclasses (Event)
 # - logging (统一日志)
 # - signal  (Ctrl+C 优雅退出)
 #
+# 真 LLM 路径 (v3 新增) 需要:
+# - tongagents>=2.7.19  # TongAgent SDK (StatelessReactAgent)
+# - openai>=1.0.0       # OpenAI 兼容客户端 (TongAgent SDK 已传递依赖)
+#
+# 缺这些依赖时, AgentHandler 自动 fallback 到 mock 路径 (v2 行为),
+# 所以 mock 路径完全不需要这些包.
+#
 # Python >= 3.11
+
+# 真 LLM 路径需要 (mock 路径不需要):
+tongagents>=2.7.19
+openai>=1.0.0
