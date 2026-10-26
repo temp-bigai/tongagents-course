@@ -1,0 +1,6 @@
+paper_memory.jsonl
+default_sql.db
+.venv/
+__pycache__/
+*.pyc
+.env
