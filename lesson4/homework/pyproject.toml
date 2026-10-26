@@ -1,0 +1,17 @@
+[project]
+name = "tongagents-lesson4-homework"
+version = "0.1.0"
+description = "Lesson 4 课后作业 — 手写 ReAct 循环的本地文件 CLI Agent (白盒版, 直接用 openai 包)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # 本作业走白盒路线: 模型调用直接用 openai 包 (课件 2.x 手写线的延续),
+    # 不依赖 tongagents —— 对照的 SDK 黑盒版见 ../cli-sample/
+    "openai>=1.50.0",
+    # 读 .env (OPENAI_* 三件套)
+    "python-dotenv>=1.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["main", "check_homework"]
+packages = ["mycli"]
